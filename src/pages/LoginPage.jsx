@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
-import { User, Lock, Eye, EyeOff, Zap } from "lucide-react"
+import { User, Lock, Eye, EyeOff, Zap, CheckCircle2 } from "lucide-react"
 
 const LoginPage = () => {
   const navigate = useNavigate()
@@ -22,58 +22,42 @@ const LoginPage = () => {
   // Fetch master data on component mount
   useEffect(() => {
     const fetchMasterData = async () => {
-      const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_705CZWY7WafvEwM309BuWKOOYi24B9tlCuwUaLBvQSy9PzD7nkojRUcRajaBCchv/exec"
+      const SCRIPT_URL = import.meta.env.VITE_SCRIPT_URL
 
       try {
         setIsDataLoading(true)
 
-        // Fetch data from your Apps Script
-        const response = await fetch(`${SCRIPT_URL}?sheet=Main&action=fetch`)
+        // Fetch data from Login sheet
+        const response = await fetch(`${SCRIPT_URL}?sheet=Login&action=fetch`)
         const result = await response.json()
         
         if (!result.success) {
           throw new Error(result.error || "Failed to fetch data")
         }
 
-        // Create userCredentials and userRoles objects from the sheet data
-        const userCredentials = {}
-        const userRoles = {}
-
-        // Process the data rows (skip header row at index 0)
+        const credentials = {} 
         const data = result.data
-        console.log("Raw sheet data:", data)
 
-        // Start from index 1 to skip header row
+        // Skip header row
         for (let i = 1; i < data.length; i++) {
-          const row = data[i]
-          
-          // Extract data from columns B, C, D (indices 1, 2, 3)
-          const username = row[1] ? String(row[1]).trim().toLowerCase() : '';
-          const password = row[2] ? String(row[2]).trim() : '';
-          const role = row[3] ? String(row[3]).trim().toLowerCase() : 'user';
+          const row = data[i];
+          if (!row || row.length < 3) continue;
 
-          console.log(`Processing row ${i}: username=${username}, password=${password}, role=${role}`);
+          // Mapping from Image 1:
+          // A (0): Name, B (1): Username, C (2): Password, D (3): Role
+          const name = row[0] ? String(row[0]).trim() : "";
+          const username = row[1] ? String(row[1]).trim().toLowerCase() : "";
+          const password = row[2] ? String(row[2]).trim() : "";
+          const role = row[3] ? String(row[3]).trim().toLowerCase() : "user";
 
-          // Only process if we have both username and password
-          if (username && password && password.trim() !== '') {
-            // Store in our maps
-            userCredentials[username] = password;
-            userRoles[username] = role;
-
-            console.log(`Added credential for: ${username}, Role: ${role}`);
+          if (username && password) {
+            credentials[username] = { password, role, name };
           }
         }
 
-        setMasterData({ userCredentials, userRoles })
-        console.log("Loaded credentials from Main sheet:", Object.keys(userCredentials).length)
-        console.log("Credentials map:", userCredentials)
-        console.log("Roles map:", userRoles)
-
-        // Debug - check admin roles specifically
-        const adminUsers = Object.entries(userRoles)
-          .filter(([, role]) => role === 'admin')
-          .map(([username]) => username);
-        console.log("Admin users found:", adminUsers);
+        setMasterData({ userCredentials: credentials })
+        console.log("Loaded credentials from Login sheet:", Object.keys(credentials).length)
+        console.log("Credentials map:", credentials)
 
       } catch (error) {
         console.error("Error Fetching Master Data:", error)
@@ -104,45 +88,36 @@ const LoginPage = () => {
       console.log("Entered Password:", trimmedPassword) // For debugging (remove in production)
       console.log("Available Credentials Count:", Object.keys(masterData.userCredentials).length)
       console.log("Current userCredentials:", masterData.userCredentials)
-      console.log("Current userRoles:", masterData.userRoles)
 
       // Check if the username exists in our credentials map
       if (trimmedUsername in masterData.userCredentials) {
-        const correctPassword = masterData.userCredentials[trimmedUsername]
-        const userRole = masterData.userRoles[trimmedUsername]
-
-        console.log("Found user in credentials map")
-        console.log("Expected Password:", correctPassword)
-        console.log("Password Match:", correctPassword === trimmedPassword)
-        console.log("User Role:", userRole)
+        const userData = masterData.userCredentials[trimmedUsername]
+        const correctPassword = userData.password
+        const userRole = userData.role
+        const displayName = userData.name || trimmedUsername
 
         // Check if password matches
         if (correctPassword === trimmedPassword) {
           // Store user info in sessionStorage
           sessionStorage.setItem('username', trimmedUsername)
+          sessionStorage.setItem('name', displayName)
+          sessionStorage.setItem('role', userRole)
 
-          // Check if user is admin - explicitly compare with the string "admin"
+          // Check if user is admin
           const isAdmin = userRole === "admin";
-          console.log(`User ${trimmedUsername} is admin: ${isAdmin}`);
-
-          // Set role based on the fetched role
-          sessionStorage.setItem('role', isAdmin ? 'admin' : 'user')
+          sessionStorage.setItem('isAdmin', isAdmin ? 'true' : 'false')
 
           // For admin users, we don't want to restrict by department
           if (isAdmin) {
-            sessionStorage.setItem('department', 'all') // Admin sees all departments
-            sessionStorage.setItem('isAdmin', 'true') // Additional flag to ensure admin permissions
-            console.log("ADMIN LOGIN - Setting full access permissions");
+            sessionStorage.setItem('department', 'all')
           } else {
             sessionStorage.setItem('department', trimmedUsername)
-            sessionStorage.setItem('isAdmin', 'false')
-            console.log("USER LOGIN - Setting restricted access");
           }
 
-          // Navigate to Add Inventory
-          navigate("/dashboard/assign-task")
+          // Navigate to Dashboard
+          navigate("/dashboard/admin")
 
-          showToast(`Login successful. Welcome, ${trimmedUsername}!`, "success")
+          showToast(`Login successful. Welcome, ${displayName}!`, "success")
           return
         } else {
           showToast("Username or password is incorrect. Please try again.", "error")
@@ -155,8 +130,7 @@ const LoginPage = () => {
       console.error("Login Failed", {
         usernameExists: trimmedUsername in masterData.userCredentials,
         passwordMatch: (trimmedUsername in masterData.userCredentials) ?
-          "Password did not match" : 'Username not found',
-        userRole: masterData.userRoles[trimmedUsername] || 'No role'
+          "Password did not match" : 'Username not found'
       })
     } catch (error) {
       console.error("Login Error:", error)
@@ -174,20 +148,20 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-100 p-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-200 p-1">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-violet-100 p-1">
         <div className="bg-white rounded-2xl p-6 shadow-inner">
           {/* Header with Icon */}
           <div className="text-center mb-6">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full mb-4 shadow-lg">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-violet-600 to-fuchsia-500 rounded-full mb-4 shadow-lg shadow-violet-200">
               <Zap className="w-8 h-8 text-white" />
             </div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-2">GROSSERY IMS</h1>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-800 to-fuchsia-600 bg-clip-text text-transparent mb-2">Cutlery Crockery</h1>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="username" className="block text-gray-700 text-sm font-medium">
+              <label htmlFor="username" className="block text-violet-700 text-sm font-semibold">
                 Username
               </label>
               <div className="relative">
@@ -202,13 +176,13 @@ const LoginPage = () => {
                   required
                   value={formData.username}
                   onChange={handleChange}
-                  className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                  className="w-full pl-10 pr-4 py-3 bg-violet-50/30 border border-violet-200 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-violet-300 focus:border-violet-500 transition-all duration-200"
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="password" className="block text-gray-700 text-sm font-medium">
+              <label htmlFor="password" className="block text-violet-700 text-sm font-semibold">
                 Password
               </label>
               <div className="relative">
@@ -223,7 +197,7 @@ const LoginPage = () => {
                   required
                   value={formData.password}
                   onChange={handleChange}
-                  className="w-full pl-10 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                  className="w-full pl-10 pr-12 py-3 bg-violet-50/30 border border-violet-200 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-violet-300 focus:border-violet-500 transition-all duration-200"
                 />
                 <button
                   type="button"
@@ -241,7 +215,7 @@ const LoginPage = () => {
 
             <button
               type="submit"
-              className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-base font-semibold rounded-lg transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:transform-none shadow-lg mt-6"
+              className="w-full py-3 px-4 bg-gradient-to-r from-violet-600 to-fuchsia-500 hover:from-violet-700 hover:to-fuchsia-600 text-white text-base font-semibold rounded-lg transition-all duration-200 transform hover:scale-[1.02] disabled:opacity-50 disabled:transform-none shadow-lg shadow-violet-200 mt-6"
               disabled={isLoginLoading || isDataLoading}
             >
               {isLoginLoading ? (
@@ -263,22 +237,22 @@ const LoginPage = () => {
       </div>
 
       {/* Fixed Footer */}
-      <div className="fixed left-0 right-0 bottom-0 py-1 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white text-center text-sm shadow-md z-10">
+      <div className="fixed left-0 right-0 bottom-0 py-1 px-4 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white text-center text-[10px] font-black uppercase tracking-[0.2em] shadow-md z-10">
         <a
           href="https://www.botivate.in/"
           target="_blank"
           rel="noopener noreferrer"
           className="hover:underline"
         >
-          Powered by-<span className="font-semibold">Botivate</span>
+          Powered by-<span className="font-black">Botivate</span>
         </a>
       </div>
 
       {/* Toast Notification */}
       {toast.show && (
         <div className={`fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg transition-all duration-300 ${toast.type === "success"
-          ? "bg-green-100 text-green-800 border-l-4 border-green-500"
-          : "bg-red-100 text-red-800 border-l-4 border-red-500"
+          ? "bg-violet-50 text-violet-800 border-l-4 border-violet-500"
+          : "bg-red-50 text-red-800 border-l-4 border-red-500"
           }`}>
           {toast.message}
         </div>

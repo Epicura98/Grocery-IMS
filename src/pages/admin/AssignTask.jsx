@@ -1,6 +1,8 @@
 "use client";
 import { useState, useEffect } from "react";
-import { FileImage, Calendar, Plus, ShoppingCart, Edit, Search } from "lucide-react";
+import { FileImage, Calendar, Plus, ShoppingCart, Edit, Search, ClipboardList, PlusCircle, Loader2, ArrowUpRight, CheckCircle2 } from "lucide-react";
+import AdminLayout from "../../components/layout/AdminLayout";
+import { compressImage, formatDate } from "../../utils/helpers";
 
 export default function InventoryForm() {
   const [activeTab, setActiveTab] = useState('addStock');
@@ -55,28 +57,9 @@ export default function InventoryForm() {
     uploadFile: ''
   });
 
-  // Form data for Issue
-  const [issueForm, setIssueForm] = useState({
-    inventoryType: '',
-    inventoryNo: '',
-    department: '',
-    itemsName: '',
-    openingBalance: '',
-    perUnit: '',
-    unit: '',
-    foodName: '',
-    eventDate: '',
-    partyName: '',
-    issueData: '',
-    returnData: '',
-    damageItems: '',
-    missingItems: '',
-    remarks: '',
-    uploadFile: ''
-  });
 
-  const scriptUrl = "https://script.google.com/macros/s/AKfycbz_705CZWY7WafvEwM309BuWKOOYi24B9tlCuwUaLBvQSy9PzD7nkojRUcRajaBCchv/exec";
-  const folderId = "113JJSny0edSxkwl9MpjTmNJo0uZuHqVn";
+  const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
+  const folderId = import.meta.env.VITE_INVENTORY_FOLDER_ID;
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -121,6 +104,7 @@ export default function InventoryForm() {
 
   useEffect(() => {
     const fetchDropdownOptions = async () => {
+      setIsLoading(true);
       try {
         const response = await fetch(`${scriptUrl}?action=fetch&sheet=Master Drop-Down`);
         const result = await response.json();
@@ -144,7 +128,10 @@ export default function InventoryForm() {
         const inventoryResult = await inventoryResponse.json();
 
         if (inventoryResult.success && inventoryResult.data) {
-          const items = inventoryResult.data.slice(1).map(row => ({
+          // Filter out empty rows (where Inventory No is missing)
+          const validRows = inventoryResult.data.slice(1).filter(row => row[2] && row[2].toString().trim() !== "");
+          
+          const items = validRows.map(row => ({
             inventoryNo: row[2],
             inventoryType: row[3],
             department: row[4],
@@ -339,91 +326,10 @@ export default function InventoryForm() {
           remarks: selectedItem.remarks,
           uploadFile: selectedItem.uploadFile
         });
-      } else if (formType === 'issue') {
-        setIssueForm({
-          inventoryNo: selectedItem.inventoryNo,
-          inventoryType: selectedItem.inventoryType,
-          department: selectedItem.department,
-          itemsName: selectedItem.itemsName,
-          openingBalance: selectedItem.openingBalance,
-          perUnit: selectedItem.perUnit,
-          unit: selectedItem.unit,
-          partyName: '',
-          foodName: '',
-          eventDate: selectedItem.eventDate || '',
-          remarks: selectedItem.remarks,
-          uploadFile: selectedItem.uploadFile,
-          issueData: '',
-          returnData: '',
-          damageItems: '',
-          missingItems: ''
-        });
       }
     }
   };
 
-  const compressImage = (file, maxSizeKB = 500) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      
-      reader.onload = (event) => {
-        const img = new Image();
-        img.src = event.target.result;
-        
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          const MAX_WIDTH = 1200;
-          const MAX_HEIGHT = 1200;
-          
-          if (width > height) {
-            if (width > MAX_WIDTH) {
-              height *= MAX_WIDTH / width;
-              width = MAX_WIDTH;
-            }
-          } else {
-            if (height > MAX_HEIGHT) {
-              width *= MAX_HEIGHT / height;
-              height = MAX_HEIGHT;
-            }
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          
-          let quality = 0.7;
-          let compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
-          
-          while (compressedDataUrl.length > maxSizeKB * 1024 * 1.37 && quality > 0.1) {
-            quality -= 0.1;
-            compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
-          }
-          
-          canvas.toBlob(
-            (blob) => {
-              const compressedFile = new File([blob], file.name, {
-                type: 'image/jpeg',
-                lastModified: Date.now(),
-              });
-              resolve({ file: compressedFile, dataUrl: compressedDataUrl });
-            },
-            'image/jpeg',
-            quality
-          );
-        };
-        
-        img.onerror = (error) => reject(error);
-      };
-      
-      reader.onerror = (error) => reject(error);
-    });
-  };
 
   const handleImageChange = async (e) => {
     const file = e.target.files[0];
@@ -502,10 +408,6 @@ export default function InventoryForm() {
         formData = purchaseForm;
         imageUrl = formData.uploadFile;
         targetSheet = "INVENTORY History";
-      } else if (formType === 'issue') {
-        formData = issueForm;
-        imageUrl = formData.uploadFile;
-        targetSheet = 'INVENTORY History';
       }
 
       let inventoryNo = formData.inventoryNo;
@@ -554,10 +456,8 @@ export default function InventoryForm() {
         formData.partyName || '',
         formData.eventDate || '',
         formData.remarks || '',
-        formType === 'addStock' ? 'add stock' : 
-          formType === 'purchase' ? 'Purchase' : 
-          formType === 'issue' ? 'Inventory Issue' : '',
-        formType === 'issue' ? (formData.foodName || '') : (formData.foodName || '')
+          formType === 'purchase' ? 'Purchase' : '',
+        formData.foodName || ''
       ];
 
       const response = await fetch(scriptUrl, {
@@ -631,89 +531,71 @@ export default function InventoryForm() {
         perUnit: '',
         unit: '',
         remarks: '',
-        uploadFile: ''
-      });
-    } else if (formType === 'issue') {
-      setIssueForm({
-        inventoryType: '',
-        inventoryNo: '',
-        department: '',
-        itemsName: '',
-        openingBalance: '',
-        perUnit: '',
-        unit: '',
-        foodName: '',
-        eventDate: '',
-        partyName: '',
-        issueData: '',
-        returnData: '',
-        damageItems: '',
-        missingItems: '',
-        remarks: '',
-        uploadFile: ''
       });
     }
     setError(null);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-pink-50 p-4">
-      <div className="max-w-4xl mx-auto mb-8">
+    <AdminLayout>
+      <div className="min-h-screen bg-[#f5f3ff] p-4 md:p-8">
+        <div className="max-w-4xl mx-auto mb-8">
         {toast.show && (
-          <div className={`fixed top-4 right-4 z-50 p-4 rounded-md shadow-md text-white ${
-            toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'
+        <div className={`fixed bottom-12 right-12 px-8 py-5 rounded-[2rem] shadow-2xl transition-all duration-500 transform animate-in slide-in-from-bottom-10 z-[100] border ${toast.type === "success"
+            ? "bg-violet-600 border-violet-400 text-white shadow-violet-200"
+            : "bg-red-600 border-red-400 text-white shadow-red-200"
           }`}>
-            {toast.message}
+          <div className="flex items-center gap-4">
+            <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-md">
+              <CheckCircle2 className="h-4 w-4 text-white" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-[0.2em]">{toast.message}</span>
           </div>
-        )}
+        </div>
+      )}
 
         <div className="flex justify-center mb-6">
           <div className="flex bg-white rounded-lg shadow-sm border border-gray-200">
             <button
               onClick={() => setActiveTab('addStock')}
-              className={`px-4 py-2 text-sm font-medium rounded-l-lg border-r ${
+              className={`flex-1 flex items-center justify-center gap-4 p-5 rounded-l-lg transition-all duration-500 ${
                 activeTab === 'addStock'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-50'
+                  ? "bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-2xl shadow-violet-500/20 scale-105"
+                  : "bg-white text-slate-400 hover:text-violet-600 border border-violet-100"
               }`}
             >
-              <Plus className="h-4 w-4 inline mr-1" />
-              Add Stock
+              <div className={`p-2 rounded-xl transition-colors ${activeTab === "addStock" ? "bg-white/20" : "bg-violet-50"}`}>
+                <PlusCircle className="h-5 w-5" />
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-widest">Add Stock</span>
             </button>
             <button
               onClick={() => setActiveTab('purchase')}
-              className={`px-4 py-2 text-sm font-medium border-r ${
+              className={`flex-1 flex items-center justify-center gap-4 p-5 transition-all duration-500 ${
                 activeTab === 'purchase'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-50'
+                  ? "bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-2xl shadow-violet-500/20 scale-105"
+                  : "bg-white text-slate-400 hover:text-violet-600 border border-violet-100"
               }`}
             >
-              <ShoppingCart className="h-4 w-4 inline mr-1" />
-              Purchase
-            </button>
-            <button
-              onClick={() => setActiveTab('issue')}
-              className={`px-4 py-2 text-sm font-medium rounded-r-lg ${
-                activeTab === 'issue'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-50'
-              }`}
-            >
-              <Edit className="h-4 w-4 inline mr-1" />
-              Inventory Issue
+              <div className={`p-2 rounded-xl transition-colors ${activeTab === "purchase" ? "bg-white/20" : "bg-violet-50"}`}>
+                <ShoppingCart className="h-5 w-5" />
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-widest">Purchase</span>
             </button>
           </div>
         </div>
 
-        <div className="rounded-lg border border-purple-200 bg-white shadow-md overflow-hidden">
-          <div className="bg-gradient-to-r from-purple-50 to-pink-50 p-4 border-b border-purple-100">
-            <center>
-              <h2 className="text-lg font-semibold text-purple-700">
-                {activeTab === 'addStock' && 'Add Stock Form'}
-                {activeTab === 'purchase' && 'Purchase Form'}
-                {activeTab === 'issue' && 'Inventory Issue Form'}
-              </h2>
-            </center>
+        <div className="bg-white rounded-[3rem] border border-violet-100 shadow-2xl shadow-violet-500/5 p-12 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-96 h-96 bg-violet-600/5 blur-[120px] rounded-full -mr-48 -mt-48 animate-pulse-slow"></div>
+          <div className="absolute bottom-0 left-0 w-96 h-96 bg-fuchsia-500/5 blur-[120px] rounded-full -ml-48 -mb-48 animate-pulse-slow"></div>
+          <div className="flex items-center gap-4 mb-10">
+            <div className="p-4 bg-violet-600 rounded-2xl shadow-2xl shadow-violet-200 animate-pulse-slow">
+              <ClipboardList className="h-8 w-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-black text-slate-900 tracking-tight italic">Inventory Registry</h1>
+              <p className="text-[10px] font-bold text-violet-500 uppercase tracking-[0.2em]">Equipment Deployment System</p>
+            </div>
           </div>
 
           <form 
@@ -740,13 +622,13 @@ export default function InventoryForm() {
               <div className="space-y-3">
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Inventory Type *</label>
+                    <label className="block text-xs font-medium text-violet-700">Inventory Type *</label>
                     <select
                       name="inventoryType"
                       value={addStockForm.inventoryType}
                       onChange={handleAddStockChange}
                       required
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     >
                       <option value="">Select Inventory Type</option>
                       {dropdownOptions.inventoryTypeOptions.map((option, index) => (
@@ -756,7 +638,7 @@ export default function InventoryForm() {
                   </div>
 
                   <div className="space-y-1">
-                    <label htmlFor="department" className="block text-xs font-medium text-purple-700">Department *</label>
+                    <label htmlFor="department" className="block text-xs font-medium text-violet-700">Department *</label>
                     <div className="relative">
                       <input
                         type="text"
@@ -782,12 +664,12 @@ export default function InventoryForm() {
                         placeholder={addStockForm.inventoryType ? "Search or type new department..." : "Select Inventory Type First"}
                         disabled={!addStockForm.inventoryType}
                         required
-                        className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 pr-8 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                        className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 pr-8 disabled:bg-gray-100 disabled:cursor-not-allowed"
                       />
                       
                       {addStockForm.inventoryType && (
                         <div 
-                          className="absolute z-10 w-full mt-1 bg-white border border-purple-200 rounded-md shadow-lg max-h-48 overflow-y-auto" 
+                          className="absolute z-10 w-full mt-1 bg-white border border-violet-200 rounded-md shadow-lg max-h-48 overflow-y-auto" 
                           style={{ display: 'none' }}
                           onMouseDown={(e) => e.preventDefault()}
                         >
@@ -796,7 +678,7 @@ export default function InventoryForm() {
                             .map((option, index) => (
                             <div
                               key={index}
-                              className="px-3 py-2 hover:bg-purple-50 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
+                              className="px-3 py-2 hover:bg-violet-50 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -841,7 +723,7 @@ export default function InventoryForm() {
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <label htmlFor="itemsName" className="block text-xs font-medium text-purple-700">Items Name *</label>
+                    <label htmlFor="itemsName" className="block text-xs font-medium text-violet-700">Items Name *</label>
                     <div className="relative">
                       <input
                         type="text"
@@ -867,12 +749,12 @@ export default function InventoryForm() {
                         placeholder={addStockForm.department ? "Search or type new item..." : "Select department first"}
                         disabled={!addStockForm.department}
                         required
-                        className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 disabled:bg-gray-100 disabled:cursor-not-allowed pr-8"
+                        className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:bg-gray-100 disabled:cursor-not-allowed pr-8"
                       />
                       
                       {addStockForm.department && (
                         <div 
-                          className="absolute z-10 w-full mt-1 bg-white border border-purple-200 rounded-md shadow-lg max-h-48 overflow-y-auto" 
+                          className="absolute z-10 w-full mt-1 bg-white border border-violet-200 rounded-md shadow-lg max-h-48 overflow-y-auto" 
                           style={{ display: 'none' }}
                           onMouseDown={(e) => e.preventDefault()}
                         >
@@ -881,7 +763,7 @@ export default function InventoryForm() {
                             .map((option, index) => (
                             <div
                               key={index}
-                              className="px-3 py-2 hover:bg-purple-50 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
+                              className="px-3 py-2 hover:bg-violet-50 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -923,7 +805,7 @@ export default function InventoryForm() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Opening Balance *</label>
+                    <label className="block text-xs font-medium text-violet-700">Opening Balance *</label>
                     <input
                       type="number"
                       name="openingBalance"
@@ -932,14 +814,14 @@ export default function InventoryForm() {
                       required
                       min="0"
                       step="0.01"
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     />
                   </div>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Per Unit Price *</label>
+                    <label className="block text-xs font-medium text-violet-700">Per Unit Price *</label>
                     <input
                       type="number"
                       name="perUnit"
@@ -948,18 +830,18 @@ export default function InventoryForm() {
                       required
                       min="0"
                       step="0.01"
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     />
                   </div>
 
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Unit *</label>
+                    <label className="block text-xs font-medium text-violet-700">Unit *</label>
                     <select
                       name="unit"
                       value={addStockForm.unit}
                       onChange={handleAddStockChange}
                       required
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     >
                       <option value="">Select Unit</option>
                       {dropdownOptions.unitOptions.map((option, index) => (
@@ -970,14 +852,14 @@ export default function InventoryForm() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-xs font-medium text-purple-700">Upload Image</label>
-                  <div className="border-2 border-dashed border-purple-300 rounded-lg p-3">
+                  <label className="block text-xs font-medium text-violet-700">Upload Image</label>
+                  <div className="border-2 border-dashed border-violet-300 rounded-lg p-3">
                     <label htmlFor="uploadFile" className="cursor-pointer">
                       <div className="text-center">
-                        <FileImage className="mx-auto h-8 w-8 text-purple-400" />
+                        <FileImage className="mx-auto h-8 w-8 text-violet-400" />
                       </div>
                       <div className="mt-2">
-                        <span className="block text-xs font-medium text-purple-600">
+                        <span className="block text-xs font-medium text-violet-600">
                           {selectedImage ? selectedImage.name : 'Click to upload an image'}
                         </span>
                       </div>
@@ -996,18 +878,18 @@ export default function InventoryForm() {
                     </div>
                   )}
                   {imageUploading && (
-                    <div className="mt-2 text-xs text-purple-600">Uploading image...</div>
+                    <div className="mt-2 text-xs text-violet-600">Uploading image...</div>
                   )}
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-xs font-medium text-purple-700">Remarks</label>
+                  <label className="block text-xs font-medium text-violet-700">Remarks</label>
                   <textarea
                     name="remarks"
                     value={addStockForm.remarks}
                     onChange={handleAddStockChange}
                     rows="3"
-                    className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     placeholder="Add any additional remarks or notes..."
                   />
                 </div>
@@ -1018,7 +900,7 @@ export default function InventoryForm() {
             {activeTab === 'purchase' && (
               <div className="space-y-3">
                 <div className="space-y-1">
-                  <label className="block text-xs font-medium text-purple-700">Inventory Type *</label>
+                  <label className="block text-xs font-medium text-violet-700">Inventory Type *</label>
                   <select
                     name="inventoryType"
                     value={purchaseForm.inventoryType}
@@ -1037,7 +919,7 @@ export default function InventoryForm() {
                       }));
                     }}
                     required
-                    className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                   >
                     <option value="">Select Inventory Type</option>
                     {dropdownOptions.inventoryTypeOptions.map((option, index) => (
@@ -1048,13 +930,13 @@ export default function InventoryForm() {
 
                 {purchaseForm.inventoryType && (
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Item Name *</label>
+                    <label className="block text-xs font-medium text-violet-700">Item Name *</label>
                     <select
                       name="itemsName"
                       value={purchaseForm.itemsName}
                       onChange={(e) => handleItemNameSelection(e.target.value, 'purchase')}
                       required
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     >
                       <option value="">Select Item Name</option>
                       {getUniqueItemNames(purchaseForm.inventoryType).map((item, index) => (
@@ -1070,7 +952,7 @@ export default function InventoryForm() {
                   <>
                     <div className="grid gap-3 md:grid-cols-2">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Department</label>
+                        <label className="block text-xs font-medium text-violet-700">Department</label>
                         <input
                           type="text"
                           value={purchaseForm.department}
@@ -1081,7 +963,7 @@ export default function InventoryForm() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Inventory Number</label>
+                        <label className="block text-xs font-medium text-violet-700">Inventory Number</label>
                         <input
                           type="text"
                           value={purchaseForm.inventoryNo}
@@ -1095,7 +977,7 @@ export default function InventoryForm() {
 
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Opening Balance *</label>
+                        <label className="block text-xs font-medium text-violet-700">Opening Balance *</label>
                         <input
                           type="number"
                           name="openingBalance"
@@ -1105,12 +987,12 @@ export default function InventoryForm() {
                           step="0.01"
                           required
                           placeholder="Enter opening balance"
-                          className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                          className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                         />
                       </div>
 
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Per Unit Price</label>
+                        <label className="block text-xs font-medium text-violet-700">Per Unit Price</label>
                         <input
                           type="number"
                           value={purchaseForm.perUnit}
@@ -1121,7 +1003,7 @@ export default function InventoryForm() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Unit</label>
+                        <label className="block text-xs font-medium text-violet-700">Unit</label>
                         <input
                           type="text"
                           value={purchaseForm.unit}
@@ -1135,8 +1017,8 @@ export default function InventoryForm() {
 
                     {purchaseForm.uploadFile && purchaseForm.uploadFile !== 'No Image' && (
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Existing Image</label>
-                        <div className="border border-purple-200 rounded-lg p-2">
+                        <label className="block text-xs font-medium text-violet-700">Existing Image</label>
+                        <div className="border border-violet-200 rounded-lg p-2">
                           <div className="flex items-center justify-center">
                             <img 
                               src={getDisplayableImageUrl(purchaseForm.uploadFile)} 
@@ -1169,7 +1051,7 @@ export default function InventoryForm() {
                     )}
 
                     <div className="space-y-1">
-                      <label className="block text-xs font-medium text-purple-700">Remarks</label>
+                      <label className="block text-xs font-medium text-violet-700">Remarks</label>
                       <textarea
                         value={purchaseForm.remarks}
                         readOnly
@@ -1188,7 +1070,7 @@ export default function InventoryForm() {
             {activeTab === 'issue' && (
               <div className="space-y-3">
                 <div className="space-y-1">
-                  <label className="block text-xs font-medium text-purple-700">Inventory Type *</label>
+                  <label className="block text-xs font-medium text-violet-700">Inventory Type *</label>
                   <select
                     name="inventoryType"
                     value={issueForm.inventoryType}
@@ -1214,7 +1096,7 @@ export default function InventoryForm() {
                       }));
                     }}
                     required
-                    className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                   >
                     <option value="">Select Inventory Type</option>
                     {dropdownOptions.inventoryTypeOptions.map((option, index) => (
@@ -1225,13 +1107,13 @@ export default function InventoryForm() {
 
                 {issueForm.inventoryType && (
                   <div className="space-y-1">
-                    <label className="block text-xs font-medium text-purple-700">Item Name *</label>
+                    <label className="block text-xs font-medium text-violet-700">Item Name *</label>
                     <select
                       name="itemsName"
                       value={issueForm.itemsName}
                       onChange={(e) => handleItemNameSelection(e.target.value, 'issue')}
                       required
-                      className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                     >
                       <option value="">Select Item Name</option>
                       {getUniqueItemNames(issueForm.inventoryType).map((item, index) => (
@@ -1247,7 +1129,7 @@ export default function InventoryForm() {
                   <>
                     <div className="grid gap-3 md:grid-cols-2">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Department</label>
+                        <label className="block text-xs font-medium text-violet-700">Department</label>
                         <input
                           type="text"
                           value={issueForm.department}  
@@ -1258,7 +1140,7 @@ export default function InventoryForm() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Inventory Number</label>
+                        <label className="block text-xs font-medium text-violet-700">Inventory Number</label>
                         <input
                           type="text"
                           value={issueForm.inventoryNo}
@@ -1272,7 +1154,7 @@ export default function InventoryForm() {
 
                     <div className="grid gap-3 md:grid-cols-4">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Opening Balance</label>
+                        <label className="block text-xs font-medium text-violet-700">Opening Balance</label>
                         <input
                           type="number"
                           value={issueForm.openingBalance}
@@ -1283,7 +1165,7 @@ export default function InventoryForm() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Per Unit Price</label>
+                        <label className="block text-xs font-medium text-violet-700">Per Unit Price</label>
                         <input
                           type="number"
                           value={issueForm.perUnit}
@@ -1294,7 +1176,7 @@ export default function InventoryForm() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Unit</label>
+                        <label className="block text-xs font-medium text-violet-700">Unit</label>
                         <input
                           type="text"
                           value={issueForm.unit}
@@ -1306,13 +1188,13 @@ export default function InventoryForm() {
                       </div>
 
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Food Name</label>
+                        <label className="block text-xs font-medium text-violet-700">Food Name</label>
                         <input
                           type="text"
                           name="foodName"
                           value={issueForm.foodName}
                           onChange={(e) => setIssueForm(prev => ({ ...prev, foodName: e.target.value }))}
-                          className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                          className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                           placeholder="Enter food name"
                         />
                       </div>
@@ -1320,21 +1202,21 @@ export default function InventoryForm() {
 
                     <div className="grid gap-3 md:grid-cols-2">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Event Date</label>
+                        <label className="block text-xs font-medium text-violet-700">Event Date</label>
                         <div className="relative">
                           <input
                             type="date"
                             name="eventDate"
                             value={issueForm.eventDate}
                             onChange={(e) => setIssueForm(prev => ({...prev, eventDate: e.target.value}))}
-                            className="w-full rounded-md border border-purple-200 p-1.5 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                            className="w-full rounded-md border border-violet-200 p-1.5 text-sm focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
                           />
-                          <Calendar className="absolute right-2 top-2 h-4 w-4 text-purple-400 pointer-events-none" />
+                          <Calendar className="absolute right-2 top-2 h-4 w-4 text-violet-400 pointer-events-none" />
                         </div>
                       </div>
                       
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-purple-700">Party Name *</label>
+                        <label className="block text-xs font-medium text-violet-700">Party Name *</label>
                         <input
                           type="text"
                           name="partyName"
@@ -1465,5 +1347,6 @@ export default function InventoryForm() {
         </div>
       </div>
     </div>
+    </AdminLayout>
   );
 }

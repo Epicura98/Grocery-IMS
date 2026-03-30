@@ -1,1420 +1,700 @@
-"use client";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  CheckCircle2,
-  Upload,
-  X,
   Search,
-  History,
-  ArrowLeft,
-  FileText,
-  MapPin,
-  Users,
-  Phone,
-  Zap,
-  Building,
+  ArrowUpRight,
+  Loader2,
+  Database,
+  Settings2,
+  ChevronDown,
   Eye,
-  DollarSign,
-  Clock,
-  Home,
-  Wrench,
-  Package,
-  ShoppingCart,
-  RotateCcw,
-  Calculator,
-  Download,
-  Filter,
+  EyeOff,
+  X,
   Calendar,
-} from "lucide-react";
-import AdminLayout from "../components/layout/AdminLayout";
+  Zap,
+  CheckCircle2,
+  ArrowLeftRight,
+  ClipboardList,
+  UploadCloud
+} from 'lucide-react';
+import AdminLayout from '../components/layout/AdminLayout';
+import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber } from '../utils/helpers';
 
-// INSTANT IMAGE LOADING - Optimized Image Component
-const OptimizedImage = ({ src, alt, className, style, onClick }) => {
-  const [imgSrc, setImgSrc] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+const Inventory = () => {
+  const [activeTab, setActiveTab] = useState('issued'); // 'issued' or 'return'
+  const [isLoading, setIsLoading] = useState(true);
+  const [isTableLoading, setIsTableLoading] = useState(false);
+  const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
+  const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
+  const [isColMenuOpen, setIsColMenuOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [toast, setToast] = useState({ show: false, message: '', type: '' });
 
-  // SIMPLE & FAST URL EXTRACTION
-  const getFastImageUrl = useCallback((url) => {
-    if (!url || url === "No Image" || url === "" || url === null) return null;
-    
-    // Fast file ID extraction - single regex pattern
-    const fileIdMatch = url.match(/\/d\/([a-zA-Z0-9-_]+)/) || 
-                       url.match(/id=([a-zA-Z0-9-_]+)/) ||
-                       url.match(/\/([a-zA-Z0-9-_]{25,})/);
-    
-    const fileId = fileIdMatch ? fileIdMatch[1] : null;
-    
-    if (fileId && fileId.length >= 25) {
-      // Use ONLY the fastest method - direct thumbnail
-      return `https://drive.google.com/thumbnail?id=${fileId}&sz=w500&authuser=0`;
-    }
-    
-    return null;
-  }, []);
-
-  // INSTANT SETUP - Minimal processing
-  useEffect(() => {
-    if (src) {
-      const fastUrl = getFastImageUrl(src);
-      if (fastUrl) {
-        setImgSrc(fastUrl);
-        setLoading(true);
-        setError(false);
-      } else {
-        setError(true);
-        setLoading(false);
-      }
-    } else {
-      setError(true);
-      setLoading(false);
-    }
-  }, [src, getFastImageUrl]);
-
-  const handleLoad = useCallback(() => {
-    setLoading(false);
-    setError(false);
-  }, []);
-
-  const handleError = useCallback(() => {
-    setError(true);
-    setLoading(false);
-  }, []);
-
-  if (error || !imgSrc) {
-    return (
-      <div className="flex items-center justify-center h-16 w-24 bg-gray-100 rounded border border-gray-200">
-        <FileText className="h-6 w-6 text-gray-400" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative">
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 rounded z-10">
-          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-        </div>
-      )}
-      <img
-        src={imgSrc}
-        alt={alt}
-        className={`${className} ${loading ? 'invisible' : 'visible'}`}
-        style={style}
-        onClick={onClick}
-        onLoad={handleLoad}
-        onError={handleError}
-        loading="eager"
-        decoding="async"
-      />
-    </div>
-  );
-};
-
-// FAST Image compression - minimal processing
-const compressImage = (file, maxWidth = 800, maxHeight = 600, quality = 0.8) => {
-  return new Promise((resolve) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    
-    img.onload = () => {
-      let { width, height } = img;
-      
-      // Quick resize calculation
-      if (width > maxWidth || height > maxHeight) {
-        const ratio = Math.min(maxWidth / width, maxHeight / height);
-        width = Math.floor(width * ratio);
-        height = Math.floor(height * ratio);
-      }
-      
-      canvas.width = width;
-      canvas.height = height;
-      
-      // Fast draw - no fancy settings
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      canvas.toBlob((compressedBlob) => {
-        const compressedFile = new File([compressedBlob], file.name, {
-          type: 'image/jpeg',
-          lastModified: Date.now(),
-        });
-        resolve(compressedFile);
-      }, 'image/jpeg', quality);
-    };
-    
-    img.src = URL.createObjectURL(file);
+  // Data State
+  const [inventoryItems, setInventoryItems] = useState([]);
+  const [issueHistory, setIssueHistory] = useState([]);
+  const [returnHistory, setReturnHistory] = useState([]);
+  const [dropdownOptions, setDropdownOptions] = useState({
+    inventoryTypeOptions: [],
+    departmentOptions: [],
+    unitOptions: []
   });
-};
+  const [filteredItems, setFilteredItems] = useState([]);
 
-const CONFIG = {
-  APPS_SCRIPT_URL:
-    "https://script.google.com/macros/s/AKfycbz_705CZWY7WafvEwM309BuWKOOYi24B9tlCuwUaLBvQSy9PzD7nkojRUcRajaBCchv/exec",
-  DRIVE_FOLDER_ID: "113JJSny0edSxkwl9MpjTmNJo0uZuHqVn",
-  SOURCE_SHEET_NAME: "INVENTORY",
-  HISTORY_SHEET_NAME: "INVENTORY History",
-  PAGE_CONFIG: {
-    title: "All INVENTORY",
-    historyTitle: "History",
-  },
-};
+  // Filter States - Issued History
+  const [issuedFilterItem, setIssuedFilterItem] = useState("");
+  const [issuedFilterType, setIssuedFilterType] = useState("");
+  const [issuedFilterDept, setIssuedFilterDept] = useState("");
+  const [issuedStartDate, setIssuedStartDate] = useState("");
+  const [issuedEndDate, setIssuedEndDate] = useState("");
 
-// Column configuration with foodName added
-const COLUMN_CONFIG = [
-  { key: 'action', label: 'ACTION', pendingOnly: true },
-  { key: 'serialNo', label: 'SERIAL NO', pendingOnly: false },
-  { key: 'inventoryNo', label: 'INVENTORY NO', pendingOnly: false },
-  { key: 'inventoryType', label: 'INVENTORY TYPE', pendingOnly: false },
-  { key: 'department', label: 'DEPARTMENT', pendingOnly: false },
-  { key: 'itemsName', label: 'ITEMS NAME', pendingOnly: false },
-  { key: 'foodName', label: 'FOOD NAME', pendingOnly: false },
-  { key: 'openingBalance', label: 'OPENING BALANCE', pendingOnly: false },
-  { key: 'issueData', label: 'ISSUE DATA', pendingOnly: false },
-  { key: 'returnData', label: 'RETURN DATA', pendingOnly: false },
-  { key: 'damageItems', label: 'DAMAGE ITEMS', pendingOnly: false },
-  { key: 'missingItems', label: 'MISSING ITEMS', pendingOnly: false },
-  { key: 'closingBalance', label: 'CLOSING BALANCE', pendingOnly: false },
-  { key: 'uploadFile', label: 'UPLOAD FILE', pendingOnly: false },
-  { key: 'unit', label: 'UNIT', pendingOnly: false },
-  { key: 'perUnitPrice', label: 'PER UNIT PRICE', pendingOnly: false },
-  { key: 'eventDate', label: 'EVENT DATE', pendingOnly: false },
-  { key: 'remarks', label: 'REMARKS', pendingOnly: false },
-];
+  // Filter States - Return History
+  const [returnFilterItem, setReturnFilterItem] = useState("");
+  const [returnFilterType, setReturnFilterType] = useState("");
+  const [returnFilterParty, setReturnFilterParty] = useState("");
+  const [returnStartDate, setReturnStartDate] = useState("");
+  const [returnEndDate, setReturnEndDate] = useState("");
 
-// Debounce hook for search optimization
-function useDebounce(value, delay) {
-  const [debouncedValue, setDebouncedValue] = useState(value);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingSerialNo, setEditingSerialNo] = useState(null);
+  const [originalTimestamp, setOriginalTimestamp] = useState(null);
 
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
+  const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
+  const folderId = import.meta.env.VITE_INVENTORY_FOLDER_ID;
+  const spreadsheetId = import.meta.env.VITE_SHEET_ID;
 
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
-}
-
-// Function to format date to dd/mm/yyyy
-function formatDate(dateString) {
-  if (!dateString) return "";
-  if (typeof dateString === "string" && dateString.includes("/")) return dateString;
-
-  try {
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return dateString;
-
-    const day = String(date.getDate()).padStart(2, "0");
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
-  } catch (e) {
-    return dateString;
-  }
-}
-
-// Function to convert date string to Date object for comparison
-function parseDate(dateString) {
-  if (!dateString) return null;
-  if (dateString.includes("/")) {
-    const parts = dateString.split("/");
-    if (parts.length === 3) {
-      return new Date(parts[2], parts[1] - 1, parts[0]);
-    }
-  }
-  return new Date(dateString);
-}
-
-function Inventory() {
-  const [pendingData, setPendingData] = useState([]);
-  const [historyData, setHistoryData] = useState([]);
-  const [inventoryTypes, setInventoryTypes] = useState([]);
-  const [selectedInventoryType, setSelectedInventoryType] = useState("");
-  const [selectedDate, setSelectedDate] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const [successMessage, setSuccessMessage] = useState("");
-  const [userRole, setUserRole] = useState("");
-  const [username, setUsername] = useState("");
-  const [selectedRows, setSelectedRows] = useState(new Set());
-  const [editableData, setEditableData] = useState({});
-
-  // Column visibility states
-  const [showColumnFilter, setShowColumnFilter] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState(() => {
-    const initialState = {};
-    COLUMN_CONFIG.forEach(col => {
-      initialState[col.key] = true;
-    });
-    return initialState;
+  // Form States
+  const [issueForm, setIssueForm] = useState({
+    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
   });
 
-  useEffect(() => {
-    const role = sessionStorage.getItem("role");
-    const user = sessionStorage.getItem("username");
-    setUserRole(role);
-    setUsername(user);
-    fetchData();
-    fetchInventoryTypes();
-  }, []);
+  const [returnForm, setReturnForm] = useState({
+    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: ''
+  });
 
-  // Close column filter when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (showColumnFilter && !event.target.closest('.column-filter-container')) {
-        setShowColumnFilter(false);
-      }
-    };
+  const [selectedIssueId, setSelectedIssueId] = useState('');
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showColumnFilter]);
+  // Column Visibility & Config
+  const [visibleColumns, setVisibleColumns] = useState({
+    date: true,
+    serial: true,
+    type: true,
+    item: true,
+    qty: true,
+    party: true,
+    eventDate: true,
+    returnDate: true,
+    damage: true,
+    missing: true,
+    image: true
+  });
 
-  // Fetch inventory types from Master Drop-Down sheet
-  const fetchInventoryTypes = useCallback(async () => {
-    try {
-      const response = await fetch(`${CONFIG.APPS_SCRIPT_URL}?sheet=Master Drop-Down&action=fetch&ts=${Date.now()}`);
-      const result = await response.json();
-      if (result.success && result.data) {
-        const types = [...new Set(result.data.slice(1).map(row => row[0]).filter(Boolean))];
-        setInventoryTypes(types);
-      }
-    } catch (err) {
-      console.error('Error fetching inventory types:', err);
-    }
-  }, []);
+  const columnConfig = activeTab === 'issued' ? [
+    { key: 'date', label: 'Date', index: 0 },
+    { key: 'type', label: 'Type', index: 3 },
+    { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'party', label: 'Party Name', index: 6 },
+    { key: 'eventDate', label: 'Event Date', index: 7 },
+    { key: 'qty', label: 'Issue Qty', index: 8 },
+    { key: 'image', label: 'Image', index: 15 }
+  ] : [
+    { key: 'actions', label: 'Actions', index: -1 },
+    { key: 'date', label: 'Date', index: 0 },
+    { key: 'type', label: 'Type', index: 3 },
+    { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'party', label: 'Party Name', index: 6 },
+    { key: 'returnDate', label: 'Return Date', index: 8 },
+    { key: 'qty', label: 'Return Qty', index: 10 },
+    { key: 'damage', label: 'Damage', index: 11 },
+    { key: 'missing', label: 'Missing', index: 12 },
+    { key: 'image', label: 'Image', index: 18 }
+  ];
 
-  // INSTANT DATA FETCH - No cache, immediate loading
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      // PENDING DATA - Fetch from INVENTORY sheet with timestamp for no cache
-      const timestamp = Date.now();
-      const pendingResponse = await fetch(`${CONFIG.APPS_SCRIPT_URL}?sheet=${CONFIG.SOURCE_SHEET_NAME}&action=fetch&ts=${timestamp}&nocache=${Math.random()}`);
-      const pendingResult = await pendingResponse.json();
-
-      if (!pendingResult.success) {
-        throw new Error(pendingResult.error || "Failed to fetch pending data");
-      }
-
-      // Map pending data from INVENTORY sheet WITH FILTER TO REMOVE EMPTY ROWS
-      const pendingRows = pendingResult.data.slice(1)
-        .map((row, index) => ({
-          id: index + 1,
-          timestamp: row[0] || '',
-          serialNo: row[1] || '',
-          inventoryNo: row[2] || '',
-          inventoryType: row[3] || '',
-          department: row[4] || '',
-          itemsName: row[5] || '',
-          foodName: row[22] || '',
-          openingBalance: parseInt(row[7]) || 0,
-          purchaseData: parseInt(row[8]) || 0,
-          issueData: parseInt(row[9]) || 0,
-          returnData: parseInt(row[10]) || 0,
-          damageItems: parseInt(row[11]) || 0,
-          missingItems: parseInt(row[12]) || 0,
-          closingBalance: parseInt(row[13]) || 0,
-          totalBalance: parseInt(row[14]) || 0,
-          uploadFile: row[15] || null,
-          unit: row[16] || '',
-          perUnitPrice: parseInt(row[17]) || 0,
-          eventDate: row[19] || '',
-          remarks: row[20] || '',
-          inventry: row[21] || '',
-        }))
-        .filter(record => {
-          // Filter out rows where all key fields are empty or zero
-          const hasData = record.serialNo || record.inventoryNo || record.inventoryType || 
-                         record.department || record.itemsName || record.foodName ||
-                         record.openingBalance > 0 || record.purchaseData > 0 || 
-                         record.issueData > 0 || record.returnData > 0 || 
-                         record.damageItems > 0 || record.missingItems > 0 || 
-                         record.closingBalance > 0 || record.totalBalance > 0 || 
-                         record.uploadFile || record.unit || record.perUnitPrice > 0 || 
-                         record.eventDate || record.remarks;
-          return hasData;
-        });
-
-      // HISTORY DATA - Fetch from INVENTORY History sheet with better error handling
-      let historyRows = [];
-      try {
-        const historyResponse = await fetch(`${CONFIG.APPS_SCRIPT_URL}?sheet=${CONFIG.HISTORY_SHEET_NAME}&action=fetch&ts=${timestamp}&nocache=${Math.random()}`);
-        const historyResult = await historyResponse.json();
-
-        if (historyResult.success && historyResult.data && historyResult.data.length > 1) {
-          // Map history data from INVENTORY History sheet WITH FILTER TO REMOVE EMPTY ROWS
-          historyRows = historyResult.data.slice(1)
-            .map((row, index) => ({
-              id: index + 1000, // Different ID range for history
-              timestamp: row[0] || '',
-              serialNo: row[1] || '',
-              inventoryNo: row[2] || '',
-              inventoryType: row[3] || '',
-              department: row[4] || '',
-              itemsName: row[5] || '',
-              foodName: row[22] || '',
-              openingBalance: parseInt(row[7]) || 0,
-              purchaseData: parseInt(row[8]) || 0,
-              issueData: parseInt(row[9]) || 0,
-              returnData: parseInt(row[10]) || 0,
-              damageItems: parseInt(row[11]) || 0,
-              missingItems: parseInt(row[12]) || 0,
-              closingBalance: parseInt(row[13]) || 0,
-              totalBalance: parseInt(row[14]) || 0,
-              uploadFile: row[15] || null,
-              unit: row[16] || '',
-              perUnitPrice: parseInt(row[17]) || 0,
-              eventDate: row[19] || '',
-              remarks: row[20] || '',
-              inventry: row[21] || '',
-            }))
-            .filter(record => {
-              // Filter out rows where all key fields are empty or zero
-              const hasData = record.serialNo || record.inventoryNo || record.inventoryType || 
-                             record.department || record.itemsName || record.foodName ||
-                             record.openingBalance > 0 || record.purchaseData > 0 || 
-                             record.issueData > 0 || record.returnData > 0 || 
-                             record.damageItems > 0 || record.missingItems > 0 || 
-                             record.closingBalance > 0 || record.totalBalance > 0 || 
-                             record.uploadFile || record.unit || record.perUnitPrice > 0 || 
-                             record.eventDate || record.remarks;
-              return hasData;
-            });
-        } else {
-          console.log('No history data found or empty history sheet');
-        }
-      } catch (historyError) {
-        console.error('Error fetching history data:', historyError);
-        // Don't throw error, just log it and continue with empty history
-      }
-
-      setHistoryData(historyRows);
-      setPendingData(pendingRows); // Show all pending rows
-
-    } catch (err) {
-      console.error('Error fetching data:', err);
-      setError(err.message || "Failed to load inventory data");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Show ALL data from INVENTORY sheet (no filtering)
-  const filteredPendingData = useMemo(() => {
-    let filteredData = pendingData; // NO COLUMN V FILTER - Show all data from INVENTORY sheet
-
-    // Additional filters
-    if (selectedInventoryType) {
-      filteredData = filteredData.filter(
-        (record) => record.inventoryType === selectedInventoryType
-      );
-    }
-
-    if (selectedDate) {
-      filteredData = filteredData.filter((record) => {
-        if (!record.eventDate) return false;
-        const recordDate = parseDate(record.eventDate);
-        if (!recordDate) return false;
-
-        const filterDate = new Date(selectedDate);
-        const recordDateStr = `${recordDate.getFullYear()}-${String(recordDate.getMonth() + 1).padStart(2, '0')}-${String(recordDate.getDate()).padStart(2, '0')}`;
-        const filterDateStr = `${filterDate.getFullYear()}-${String(filterDate.getMonth() + 1).padStart(2, '0')}-${String(filterDate.getDate()).padStart(2, '0')}`;
-        
-        return recordDateStr === filterDateStr;
-      });
-    }
-
-    return filteredData;
-  }, [pendingData, selectedInventoryType, selectedDate]);
-
-  // Calculate summary statistics
-  const summaryStats = useMemo(() => {
-    const filteredData = filteredPendingData;
-    
-    const totalOpeningBalance = filteredData.reduce((sum, item) => sum + (item.openingBalance || 0), 0);
-    const totalIssueData = filteredData.reduce((sum, item) => sum + (item.issueData || 0), 0);
-    const totalClosingBalance = filteredData.reduce((sum, item) => sum + (item.closingBalance || 0), 0);
-    const totalReturn = filteredData.reduce((sum, item) => sum + (item.returnData || 0), 0);
-
-    return {
-      totalOpeningBalance,
-      totalIssueData,
-      totalClosingBalance,
-      totalReturn,
-    };
-  }, [filteredPendingData]);
-
-  // Show ALL data from INVENTORY History sheet (no filtering)
-  const filteredHistoryData = useMemo(() => {
-    let filteredData = historyData; // NO COLUMN V FILTER - Show all data from INVENTORY History sheet
-
-    // Additional filters
-    if (selectedInventoryType) {
-      filteredData = filteredData.filter(
-        (record) => record.inventoryType === selectedInventoryType
-      );
-    }
-
-    if (selectedDate) {
-      filteredData = filteredData.filter((record) => {
-        if (!record.eventDate) return false;
-        const recordDate = parseDate(record.eventDate);
-        if (!recordDate) return false;
-
-        const filterDate = new Date(selectedDate);
-        const recordDateStr = `${recordDate.getFullYear()}-${String(recordDate.getMonth() + 1).padStart(2, '0')}-${String(recordDate.getDate()).padStart(2, '0')}`;
-        const filterDateStr = `${filterDate.getFullYear()}-${String(filterDate.getMonth() + 1).padStart(2, '0')}-${String(filterDate.getDate()).padStart(2, '0')}`;
-        
-        return recordDateStr === filterDateStr;
-      });
-    }
-
-    return filteredData;
-  }, [historyData, selectedInventoryType, selectedDate]);
-
-  // Function to download data as Excel
-  const downloadExcel = useCallback(() => {
-    const dataToDownload = showHistory ? filteredHistoryData : filteredPendingData;
-    
-    if (dataToDownload.length === 0) {
-      alert("No data to download");
-      return;
-    }
-
-const headers = ["Inventory No", "Inventory Type", "Department", "Items Name", "Food Name", "Issue Data", "Return Data", "Missing Item", "Damage Item", "Upload file-url"];
-const csvContent = [
-  headers.join(","),
-  ...dataToDownload.map(item => [
-    item.inventoryNo,
-    item.inventoryType.replace(/,/g, ""),
-    item.department.replace(/,/g, ""),
-    item.itemsName.replace(/,/g, ""),
-    item.foodName ? item.foodName.replace(/,/g, "") : "",
-    item.issueData || 0,
-    item.returnData || 0,
-    item.missingItems || 0,
-    item.damageItems || 0,
-    item.uploadFile || ""
-  ].join(","))
-].join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", showHistory ? "inventory_history_pending_inventory_data.csv" : "inventory_data.csv");
-    link.style.visibility = "hidden";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }, [filteredPendingData, filteredHistoryData, showHistory]);
-
-  const handleRowSelect = useCallback((id) => {
-    setSelectedRows(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(id)) {
-        newSet.delete(id);
-        setEditableData(prevData => {
-          const newData = { ...prevData };
-          delete newData[id];
-          return newData;
-        });
-      } else {
-        newSet.add(id);
-        const rowData = filteredPendingData.find(item => item.id === id);
-        if (rowData) {
-          setEditableData(prevData => ({
-            ...prevData,
-            [id]: { ...rowData }
-          }));
-        }
-      }
-      return newSet;
-    });
-  }, [filteredPendingData]);
-
-  const handleEditableChange = useCallback((id, field, value) => {
-    setEditableData(prevData => ({
-      ...prevData,
-      [id]: {
-        ...prevData[id],
-        [field]: value
-      }
-    }));
-  }, []);
-
-  const uploadFileToDrive = useCallback(async (file) => {
-  try {
-    // Skip compression for faster uploads - let Google Drive handle it
-    let processedFile = file;
-    
-    // Only compress if really large (>5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      console.log('Fast compressing large image:', file.name);
-      processedFile = await compressImage(file, 800, 600, 0.8);
-    }
-
-    const base64Data = await fileToBase64(processedFile);
-
-    // Fast upload with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-    const response = await fetch(CONFIG.APPS_SCRIPT_URL, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        action: "uploadFile",
-        base64Data: base64Data,
-        fileName: processedFile.name,
-        mimeType: processedFile.type,
-        folderId: CONFIG.DRIVE_FOLDER_ID,
-      }),
-    });
-
-    clearTimeout(timeoutId);
-
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.error || "Failed to upload file");
-    }
-
-    return result.fileUrl;
-  } catch (error) {
-    console.error("Error uploading file:", error);
-    throw error;
-  }
-}, []);
-
-const fileToBase64 = (file) => {
-    return new Promise((resolve, reject) => {
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSelectedImage(file);
       const reader = new FileReader();
+      reader.onloadend = () => setImagePreview(reader.result);
       reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = (error) => reject(error);
-    });
+    }
   };
 
-  // Submit updates to INVENTORY History sheet
-  const handleSaveChanges = useCallback(async () => {
+  const uploadToDrive = async (file) => {
+    const compressedFile = await compressImage(file);
+    const base64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(compressedFile);
+    });
+    const response = await fetch(scriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        action: "uploadFile",
+        base64Data: base64,
+        fileName: `${Date.now()}_${compressedFile.name}`,
+        mimeType: compressedFile.type,
+        folderId: folderId,
+        spreadsheetId: spreadsheetId
+      })
+    });
+    const result = await response.json();
+    if (!result.success) throw new Error(result.error);
+    return result.fileUrl;
+  };
+
+  const getDisplayableImageUrl = (url) => {
+    if (!url || url === 'No Image') return null;
     try {
-      setLoading(true);
+      const match = url.match(/(?:id=|\/d\/)([a-zA-Z0-9\-_]{25,})/);
+      if (match && match[1]) return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w600`;
+      return url;
+    } catch (e) { return url; }
+  };
 
-      const now = new Date();
-      const day = String(now.getDate()).padStart(2, "0");
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const year = now.getFullYear();
-      const hours = String(now.getHours()).padStart(2, "0");
-      const minutes = String(now.getMinutes()).padStart(2, "0");
-      const currentTimestamp = `${day}/${month}/${year}, ${hours}:${minutes}`;
+  const showToast = (message, type = 'success') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast({ show: false, message: '', type: '' }), 3000);
+  };
 
-      const updates = await Promise.all(
-        Array.from(selectedRows).map(async (id) => {
-          const data = editableData[id];
-          let fileUrl = data.uploadFile;
-
-          if (data.uploadFile instanceof File) {
-            fileUrl = await uploadFileToDrive(data.uploadFile);
-          }
-
-          return {
-            id,
-            rowData: [
-              currentTimestamp, // Column A
-              "",               // Column B - Empty
-              data.inventoryNo || "",  // Column C
-              data.inventoryType || "", // Column D
-              data.department || "",   // Column E
-              data.itemsName || "",    // Column F
-              "",                     // Column G - Empty
-              data.openingBalance || 0, // Column H
-              data.purchaseData || 0,   // Column I
-              data.issueData || 0,      // Column J
-              data.returnData || 0,     // Column K
-              data.damageItems || 0,    // Column L
-              data.missingItems || 0,   // Column M
-              data.closingBalance || 0, // Column N
-              data.totalBalance || 0,   // Column O
-              fileUrl,                  // Column P
-              data.unit || "",          // Column Q
-              data.perUnitPrice || 0,   // Column R
-              "",                       // Column S - Empty
-              data.eventDate || "",     // Column T
-              data.remarks || "",       // Column U
-              "all inventory",          // Column V - automatically set to "all inventory"
-              data.foodName || "",      // Column W
-            ],
-          };
-        })
-      );
-
-      // Create new rows in INVENTORY History sheet
-      for (const update of updates) {
-        const updateResponse = await fetch(CONFIG.APPS_SCRIPT_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({
-            action: "update",
-            sheetName: CONFIG.HISTORY_SHEET_NAME, // Submit to INVENTORY History
-            rowData: JSON.stringify(update.rowData),
-          }),
+  const fetchInitialData = async () => {
+    setIsLoading(true);
+    try {
+      const [dropdownRes, invRes] = await Promise.all([
+        fetch(`${scriptUrl}?action=fetch&sheet=Master Drop-Down&spreadsheetId=${spreadsheetId}`).then(r => r.json()),
+        fetch(`${scriptUrl}?action=fetch&sheet=INVENTORY&spreadsheetId=${spreadsheetId}`).then(r => r.json())
+      ]);
+      let dropdownResult = dropdownRes;
+      if (!dropdownResult.success || !dropdownResult.data) {
+        dropdownResult = await fetch(`${scriptUrl}?action=fetch&sheet=Master-Dropdown&spreadsheetId=${spreadsheetId}`).then(r => r.json());
+      }
+      if (dropdownResult.success && dropdownResult.data) {
+        const rows = dropdownResult.data.slice(1);
+        setDropdownOptions({
+          inventoryTypeOptions: [...new Set(rows.map(row => row[3]).filter(Boolean))],
+          departmentOptions: [...new Set(rows.map(row => row[1]).filter(Boolean))],
+          unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))]
         });
+      }
+      if (invRes.success && invRes.data) {
+        // Fetch Add-Stock to get the Unit column (col I = index 8), matched by Inv No (col C = index 2)
+        let unitMap = {};
+        try {
+          const stockRes = await fetch(`${scriptUrl}?action=fetch&sheet=Add-Stock&sheetName=Add-Stock&spreadsheetId=${spreadsheetId}`).then(r => r.json());
+          if (stockRes.success && stockRes.data) {
+            stockRes.data.slice(1).forEach(row => {
+              const invNo = row[2] && row[2].toString().trim();
+              const unit = row[8] && row[8].toString().trim();
+              if (invNo && unit) unitMap[invNo] = unit;
+            });
+          }
+        } catch (e) { console.warn('Could not fetch Add-Stock for unit lookup:', e); }
 
-        const updateResult = await updateResponse.json();
-        if (!updateResult.success) {
-          throw new Error(updateResult.error || "Failed to create new row");
+        const validRows = invRes.data.slice(1).filter(row => row[1] && row[1].toString().trim() !== "");
+        setInventoryItems(validRows.map(row => ({
+          inventoryNo: row[1],
+          inventoryType: row[2],
+          department: row[3],
+          itemsName: row[4],
+          openingBalance: parseNumber(row[7]),          // col H of INVENTORY (parsed as number)
+          unit: unitMap[row[1]] || 'PCS',            // col I of Add-Stock, matched by Inv No
+          perUnit: parseNumber(row[8]),
+          imageUrl: row[13] || '',
+          remarks: ''
+        })));
+      }
+    } catch (err) {
+      console.error('Fetch error:', err);
+      showToast('Failed to load initial data', 'error');
+    } finally { setIsLoading(false); }
+  };
+
+  const fetchHistory = async () => {
+    setIsTableLoading(true);
+    try {
+      const [issuedRes, returnRes] = await Promise.all([
+        fetch(`${scriptUrl}?action=fetch&sheet=Issued&sheetName=Issued&spreadsheetId=${spreadsheetId}`).then(r => r.json()),
+        fetch(`${scriptUrl}?action=fetch&sheet=Return&sheetName=Return&spreadsheetId=${spreadsheetId}`).then(r => r.json())
+      ]);
+      if (issuedRes.success && issuedRes.data) {
+        const validRows = issuedRes.data.slice(1).filter(row => row[2] && row[2].toString().trim() !== "");
+        setIssueHistory(validRows.reverse());
+      }
+      if (returnRes.success && returnRes.data) {
+        const validRows = returnRes.data.slice(1).filter(row => row[1] && row[1].toString().trim() !== "");
+        setReturnHistory(validRows.reverse());
+      }
+    } catch (err) { console.error('History fetch error:', err); } finally { setIsTableLoading(false); }
+  };
+
+  useEffect(() => { fetchInitialData(); fetchHistory(); }, []);
+
+  useEffect(() => {
+    const currentType = isIssueModalOpen ? issueForm.inventoryType : returnForm.inventoryType;
+    if (currentType) {
+      const uniqueItems = [...new Set(inventoryItems.filter(item => item.inventoryType === currentType).map(item => item.itemsName))].filter(Boolean);
+      setFilteredItems(uniqueItems);
+    } else { setFilteredItems([]); }
+  }, [issueForm.inventoryType, returnForm.inventoryType, inventoryItems, isIssueModalOpen, isReturnModalOpen]);
+
+  // Derive Options for Filters
+  const issuedOptions = useMemo(() => {
+    const filteredByItem = issueHistory.filter(r => (!issuedFilterType || r[3] === issuedFilterType) && (!issuedFilterDept || r[6] === issuedFilterDept));
+    const filteredByType = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterDept || r[6] === issuedFilterDept));
+    const filteredByDept = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterType || r[3] === issuedFilterType));
+    
+    return {
+      items: [...new Set(filteredByItem.map(r => r[5]).filter(Boolean))].sort(),
+      types: [...new Set(filteredByType.map(r => r[3]).filter(Boolean))].sort(),
+      depts: [...new Set(filteredByDept.map(r => r[6]).filter(Boolean))].sort(),
+    };
+  }, [issueHistory, issuedFilterItem, issuedFilterType, issuedFilterDept]);
+
+  const returnOptions = useMemo(() => {
+    const filteredByItem = returnHistory.filter(r => (!returnFilterType || r[3] === returnFilterType) && (!returnFilterParty || r[6] === returnFilterParty));
+    const filteredByType = returnHistory.filter(r => (!returnFilterItem || r[5] === returnFilterItem) && (!returnFilterParty || r[6] === returnFilterParty));
+    const filteredByParty = returnHistory.filter(r => (!returnFilterItem || r[5] === returnFilterItem) && (!returnFilterType || r[3] === returnFilterType));
+
+    return {
+      items: [...new Set(filteredByItem.map(r => r[5]).filter(Boolean))].sort(),
+      types: [...new Set(filteredByType.map(r => r[3]).filter(Boolean))].sort(),
+      parties: [...new Set(filteredByParty.map(r => r[6]).filter(Boolean))].sort(),
+    };
+  }, [returnHistory, returnFilterItem, returnFilterType, returnFilterParty]);
+
+  const filteredIssuedHistory = useMemo(() => {
+    return issueHistory.filter(row => {
+      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && String(cell).toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
+      const matchesType = !issuedFilterType || row[3] === issuedFilterType;
+      const matchesDept = !issuedFilterDept || row[6] === issuedFilterDept;
+      let matchesDate = true;
+      if (issuedStartDate || issuedEndDate) {
+        const rowDate = parseRowDate(row[0]);
+        if (!rowDate || isNaN(rowDate)) return true;
+        if (issuedStartDate && rowDate < new Date(issuedStartDate)) matchesDate = false;
+        if (issuedEndDate) {
+          const end = new Date(issuedEndDate);
+          end.setHours(23, 59, 59, 999);
+          if (rowDate > end) matchesDate = false;
         }
       }
+      return matchesSearch && matchesItem && matchesType && matchesDept && matchesDate;
+    });
+  }, [issueHistory, searchTerm, issuedFilterItem, issuedFilterType, issuedFilterDept, issuedStartDate, issuedEndDate]);
 
-      await fetchData();
-      setSelectedRows(new Set());
-      setEditableData({});
-      setSuccessMessage("Changes saved successfully to inventory history!");
-      setTimeout(() => setSuccessMessage(""), 3000);
-    } catch (err) {
-      console.error("Error saving changes:", err);
-      setError(err.message || "Failed to save changes");
-    } finally {
-      setLoading(false);
-    }
-  }, [editableData, selectedRows, fetchData, uploadFileToDrive]);
+  const filteredReturnHistory = useMemo(() => {
+    return returnHistory.filter(row => {
+      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && String(cell).toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesItem = !returnFilterItem || row[5] === returnFilterItem;
+      const matchesType = !returnFilterType || row[3] === returnFilterType;
+      const matchesParty = !returnFilterParty || row[6] === returnFilterParty;
+      let matchesDate = true;
+      if (returnStartDate || returnEndDate) {
+        const rowDate = parseRowDate(row[0]);
+        if (!rowDate || isNaN(rowDate)) return true;
+        if (returnStartDate && rowDate < new Date(returnStartDate)) matchesDate = false;
+        if (returnEndDate) {
+          const end = new Date(returnEndDate);
+          end.setHours(23, 59, 59, 999);
+          if (rowDate > end) matchesDate = false;
+        }
+      }
+      return matchesSearch && matchesItem && matchesType && matchesParty && matchesDate;
+    });
+  }, [returnHistory, searchTerm, returnFilterItem, returnFilterType, returnFilterParty, returnStartDate, returnEndDate]);
 
-  const toggleSection = useCallback((section) => {
-    setShowHistory(section === "history");
-    setSelectedRows(new Set());
-    setEditableData({});
-  }, []);
+  const handleIssueSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      const imageUrl = selectedImage ? await uploadToDrive(selectedImage) : (issueForm.imageUrl || 'No Image');
+      const now = new Date();
+      const localTimestamp = now.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(',', '');
+      const opening = parseFloat(issueForm.openingBalance) || 0;
+      const consumed = parseFloat(issueForm.issueData) || 0;
+      const closing = opening - consumed;
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', 'Inventory', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)];
+      const response = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ action: 'insert', sheet: 'Issued', sheetName: 'Issued', spreadsheetId: spreadsheetId, rowData: JSON.stringify(rowData) })
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast('Issue recorded successfully');
+        setIsIssueModalOpen(false);
+        setIssueForm({ inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', foodName: '', issueData: '', remarks: '', imageUrl: '' });
+        setSelectedImage(null); setImagePreview(null); fetchHistory();
+      } else throw new Error(result.error);
+    } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
+  };
 
-  const handleColumnToggle = useCallback((columnKey) => {
-    setVisibleColumns(prev => ({
+  const handleSelectIssue = (issueRow) => {
+    if (!issueRow) return;
+    setReturnForm(prev => ({
       ...prev,
-      [columnKey]: !prev[columnKey]
+      inventoryNo: issueRow[2],
+      inventoryType: issueRow[3],
+      department: issueRow[4],
+      itemsName: issueRow[5],
+      partyName: issueRow[6],
+      eventDate: toInputDate(issueRow[7]),
+      issueQty: parseNumber(issueRow[8]),
+      unit: issueRow[9],
+      perUnit: parseNumber(issueRow[10]),
+      openingBalance: parseNumber(issueRow[11]),
+      closingBalance: parseNumber(issueRow[12]),
+      foodName: issueRow[14],
+      imageUrl: issueRow[15]
     }));
-  }, []);
+    if (issueRow[15]) setImagePreview(getDisplayableImageUrl(issueRow[15]));
+  };
 
-  const handleSelectAllColumns = useCallback((e) => {
-    e.stopPropagation();
-    const newState = {};
-    COLUMN_CONFIG.forEach(col => {
-      if (showHistory && col.pendingOnly) return;
-      newState[col.key] = true;
+  const handleEditReturn = (row) => {
+    setReturnForm({
+      inventoryNo: row[2], inventoryType: row[3], department: row[4], itemsName: row[5], partyName: row[6], eventDate: toInputDate(row[7]), returnDate: toInputDate(row[8]), issueQty: row[9], returnData: row[10], damageItems: row[11], missingItems: row[12], unit: row[13], perUnit: row[14], openingBalance: row[15], closingBalance: row[16], remarks: row[19], imageUrl: row[18]
     });
-    setVisibleColumns(newState);
-  }, [showHistory]);
+    setEditingSerialNo(row[1]); setOriginalTimestamp(row[0]); setIsEditing(true); setIsReturnModalOpen(true); setImagePreview(getDisplayableImageUrl(row[18]));
+  };
 
-  const getVisibleColumnsForCurrentSection = useCallback(() => {
-    return COLUMN_CONFIG.filter(col => {
-      if (showHistory && col.pendingOnly) return false;
-      return visibleColumns[col.key];
-    });
-  }, [visibleColumns, showHistory]);
+  const handleReturnSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      const imageUrl = selectedImage ? await uploadToDrive(selectedImage) : (returnForm.imageUrl || 'No Image');
+      const now = new Date();
+      const localTimestamp = now.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(',', '');
+      const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const toSheetDate = (val) => {
+        if (!val) return '';
+        const s = String(val).trim();
+        const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (isoMatch) { const [, y, mo, d] = isoMatch; return `${d}-${MONTHS[parseInt(mo, 10) - 1]}-${y}`; }
+        const dmyMatch = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+        if (dmyMatch) { const [, d, mo, y] = dmyMatch; return `${d}-${MONTHS[parseInt(mo, 10) - 1]}-${y}`; }
+        return s;
+      };
+      const baseRowData = [isEditing ? originalTimestamp : localTimestamp, isEditing ? editingSerialNo : "", returnForm.inventoryNo, returnForm.inventoryType, returnForm.department, returnForm.itemsName, returnForm.partyName, toSheetDate(returnForm.eventDate), toSheetDate(returnForm.returnDate), returnForm.issueQty, returnForm.returnData, returnForm.damageItems, returnForm.missingItems, returnForm.unit, returnForm.perUnit, returnForm.openingBalance, returnForm.closingBalance, (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), imageUrl, returnForm.remarks];
+      const rowData = isEditing ? [...baseRowData, '', ''] : baseRowData;
+      const response = await fetch(scriptUrl, {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ action: isEditing ? "update" : "insert", sheet: "Return", sheetName: "Return", spreadsheetId: spreadsheetId, rowData: JSON.stringify(rowData) })
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast(isEditing ? 'Record updated successfully' : 'Return recorded successfully');
+        setIsReturnModalOpen(false); setIsEditing(false); setEditingSerialNo(null); setOriginalTimestamp(null);
+        setReturnForm({ inventoryType: '', itemsName: '', department: '', inventoryNo: '', openingBalance: '', perUnit: '', unit: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '' });
+        setSelectedIssueId(''); setSelectedImage(null); setImagePreview(null); fetchHistory();
+      } else throw new Error(result.error);
+    } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
+  };
+
+  const getFilteredHistory = () => activeTab === 'issued' ? filteredIssuedHistory : filteredReturnHistory;
 
   return (
     <AdminLayout>
-      <div className="min-h-screen bg-gray-50 p-4">
-        {/* Header - More compact */}
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 mb-4">
-          <h1 className="text-2xl font-bold text-blue-700">
-            {CONFIG.PAGE_CONFIG.title}
-          </h1>
-          <div className="flex flex-wrap gap-2">
-            {/* Inventory Type Dropdown */}
-            <select
-              value={selectedInventoryType}
-              onChange={(e) => setSelectedInventoryType(e.target.value)}
-              className="px-3 py-2 border border-blue-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
-            >
-              <option value="">All Inventory Types</option>
-              {inventoryTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-
-            {/* Date Filter */}
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="px-3 py-2 border border-blue-200 rounded-md focus:outline-none focus:border-blue-400 text-sm bg-white"
-            />
-
-            <button
-              onClick={downloadExcel}
-              className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm flex items-center gap-1"
-            >
-              <Download className="h-4 w-4" />
-              Download
-            </button>
-
-            {selectedRows.size > 0 && !showHistory && (
-              <button
-                onClick={handleSaveChanges}
-                className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm flex items-center gap-1"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                Save Changes
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Summary Statistics - More compact */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-          <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg p-3 text-white">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-blue-100 text-xs">Total Opening Balance</p>
-                <p className="text-xl font-bold">{summaryStats.totalOpeningBalance}</p>
-              </div>
-              <Package className="h-6 w-6 text-blue-200" />
-            </div>
-          </div>
-          <div className="bg-gradient-to-r from-green-500 to-green-600 rounded-lg p-3 text-white">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-green-100 text-xs">Total Issue Data</p>
-                <p className="text-xl font-bold">{summaryStats.totalIssueData}</p>
-              </div>
-              <ShoppingCart className="h-6 w-6 text-green-200" />
-            </div>
-          </div>
-          <div className="bg-gradient-to-r from-yellow-500 to-yellow-600 rounded-lg p-3 text-white">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-yellow-100 text-xs">Total Return</p>
-                <p className="text-xl font-bold">{summaryStats.totalReturn}</p>
-              </div>
-              <RotateCcw className="h-6 w-6 text-yellow-200" />
-            </div>
-          </div>
-          <div className="bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg p-3 text-white">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-purple-100 text-xs">Closing Balance</p>
-                <p className="text-xl font-bold">{summaryStats.totalClosingBalance.toLocaleString()}</p>
-              </div>
-              <Calculator className="h-6 w-6 text-purple-200" />
-            </div>
-          </div>
-        </div>
-
-        {/* Section Toggle Buttons */}
-        <div className="flex space-x-1 border-b border-gray-200 mb-4">
-          <button
-            onClick={() => toggleSection("pending")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              !showHistory
-                ? "border-blue-500 text-blue-600 bg-blue-50"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Package className="h-4 w-4" />
-              Pending Inventory ({filteredPendingData.length})
-            </div>
-          </button>
-          <button
-            onClick={() => toggleSection("history")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              showHistory
-                ? "border-blue-500 text-blue-600 bg-blue-50"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <History className="h-4 w-4" />
-              Inventory History ({filteredHistoryData.length})
-            </div>
-          </button>
-        </div>
-
-        {/* Success Message */}
-        {successMessage && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-2 rounded-md flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
-              {successMessage}
-            </div>
-            <button
-              onClick={() => setSuccessMessage("")}
-              className="text-green-500 hover:text-green-700"
-            >
-              <X className="h-4 w-4" />
-            </button>
+      <div className="h-[calc(100vh-42px)] bg-[#f0f2f8] font-sans flex flex-col overflow-hidden">
+        {toast.show && (
+          <div className={`fixed bottom-8 right-8 px-6 py-4 rounded-3xl shadow-2xl z-[200] transition-all duration-300 transform animate-in slide-in-from-right-8 ${toast.type === "success" ? "bg-violet-600 text-white shadow-violet-200" : "bg-red-600 text-white shadow-red-200"}`}>
+            <div className="flex items-center gap-3 font-sans"><span className="text-[10px] font-black uppercase tracking-widest">{toast.message}</span></div>
           </div>
         )}
 
-        {/* Error Message */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-md flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <X className="h-4 w-4 text-red-500" />
-              {error}
-            </div>
-            <button
-              onClick={() => setError(null)}
-              className="text-red-500 hover:text-red-700"
-            >
-              <X className="h-4 w-4" />
+        <div className="flex items-center justify-between px-8 pt-6 pb-4">
+          <div><h1 className="text-3xl font-bold text-slate-800 tracking-tight">Inventory Management</h1></div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => { setIsIssueModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-violet-100">
+              <ClipboardList className="h-4 w-4 text-white/70" /> Issue Form
+            </button>
+            <button onClick={() => { setIsReturnModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-white border border-fuchsia-200 text-fuchsia-600 rounded-lg flex items-center gap-2 text-sm font-semibold hover:bg-fuchsia-50 transition-all shadow-sm">
+              <ArrowLeftRight className="h-4 w-4 text-fuchsia-400" /> Return Form
             </button>
           </div>
-        )}
+        </div>
 
-        {/* Main Table Container - FIXED */}
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
-          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-blue-100 p-3 flex items-center justify-between">
-            <div>
-              <h2 className="text-blue-700 font-medium text-sm">
-                {showHistory ? "Inventory History" : "Pending Inventory Items"}
-              </h2>
-              <p className="text-blue-600 text-xs">
-                {showHistory ? "All records from INVENTORY History sheet" : "All records from INVENTORY sheet - select rows to complete"}
-              </p>
+        <div className="mx-6 mb-6 bg-white rounded-xl shadow-sm border border-slate-100 flex flex-col flex-1 min-h-0 overflow-visible relative">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100/50 rounded-t-xl">
+            <div className="flex gap-1.5 bg-slate-100/80 p-1.5 rounded-2xl shadow-inner-sm">
+              <button onClick={() => setActiveTab('issued')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'issued' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Issued History</button>
+              <button onClick={() => setActiveTab('return')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'return' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Return History</button>
             </div>
 
-            {/* Column Filter Button */}
-            <div className="relative column-filter-container">
-              <button
-                onClick={() => setShowColumnFilter(!showColumnFilter)}
-                className="flex items-center gap-2 px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-md text-sm font-medium transition-colors"
-              >
-                <Filter className="h-4 w-4" />
-                Columns
-              </button>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3">
+                <div className="relative group">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 group-focus-within:text-violet-500 transition-colors" />
+                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search..." className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-2xl text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-violet-500/10 focus:bg-white w-40 transition-all" />
+                </div>
 
-              {showColumnFilter && (
-                <div className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg z-50 w-64 max-h-80 overflow-y-auto">
-                  <div className="p-3 border-b border-gray-100">
-                    <h3 className="font-medium text-gray-900 text-sm mb-2">Show/Hide Columns</h3>
-                    <button
-                      onClick={handleSelectAllColumns}
-                      className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                    >
-                      Select All
-                    </button>
-                  </div>
-                  <div className="p-2 max-h-60 overflow-y-auto">
-                    {COLUMN_CONFIG.filter(col => !showHistory || !col.pendingOnly).map((column) => (
-                      <label key={column.key} className="flex items-center p-2 hover:bg-gray-50 rounded cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={visibleColumns[column.key] || false}
-                          onChange={() => handleColumnToggle(column.key)}
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mr-3"
-                        />
-                        <span className="text-sm text-gray-700">{column.label}</span>
-                      </label>
-                    ))}
+                <div className="flex items-center gap-1.5 p-1 bg-slate-50 rounded-2xl border border-slate-100">
+                  {activeTab === 'issued' ? (
+                    <>
+                      <select value={issuedFilterType} onChange={(e) => setIssuedFilterType(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Types</option>
+                        {issuedOptions.types.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <select value={issuedFilterDept} onChange={(e) => setIssuedFilterDept(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Party</option>
+                        {issuedOptions.depts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <select value={issuedFilterItem} onChange={(e) => setIssuedFilterItem(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Items</option>
+                        {issuedOptions.items.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </>
+                  ) : (
+                    <>
+                      <select value={returnFilterType} onChange={(e) => setReturnFilterType(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Types</option>
+                        {returnOptions.types.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <select value={returnFilterParty} onChange={(e) => setReturnFilterParty(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Party</option>
+                        {returnOptions.parties.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <select value={returnFilterItem} onChange={(e) => setReturnFilterItem(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                        <option value="">All Items</option>
+                        {returnOptions.items.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </>
+                  )}
+                  <div className="flex items-center gap-1.5 ml-1 px-2 border-l border-slate-200">
+                    <div className="relative group/date">
+                      <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 group-hover/date:text-fuchsia-500 transition-colors" />
+                      <input type="date" value={activeTab === 'issued' ? issuedStartDate : returnStartDate} onChange={(e) => activeTab === 'issued' ? setIssuedStartDate(e.target.value) : setReturnStartDate(e.target.value)} className="h-7.5 pl-7 pr-1.5 bg-slate-50 border border-slate-100 rounded-xl text-[9.5px] font-black text-slate-600 cursor-pointer hover:bg-white hover:border-fuchsia-200 transition-all shadow-sm" />
+                    </div>
+                    <span className="text-slate-300 text-[9px] font-black mx-0.5">TO</span>
+                    <div className="relative group/date">
+                      <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 group-hover/date:text-fuchsia-500 transition-colors" />
+                      <input type="date" value={activeTab === 'issued' ? issuedEndDate : returnEndDate} onChange={(e) => activeTab === 'issued' ? setIssuedEndDate(e.target.value) : setReturnEndDate(e.target.value)} className="h-7.5 pl-7 pr-1.5 bg-slate-50 border border-slate-100 rounded-xl text-[9.5px] font-black text-slate-600 cursor-pointer hover:bg-white hover:border-fuchsia-200 transition-all shadow-sm" />
+                    </div>
+                    {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterDept || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
+                      <button onClick={() => { if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterDept(""); setIssuedStartDate(""); setIssuedEndDate(""); } else { setReturnFilterItem(""); setReturnFilterType(""); setReturnFilterParty(""); setReturnStartDate(""); setReturnEndDate(""); } setSearchTerm(""); }} className="p-1 hover:bg-red-50 text-red-400 hover:text-red-500 rounded-lg transition-colors"><X className="h-3 w-3" /></button>
+                    )}
                   </div>
                 </div>
-              )}
+              </div>
+
+              <div className="relative">
+                <button onClick={() => setIsColMenuOpen(!isColMenuOpen)} className={`h-8 px-3 rounded-xl border border-slate-100 flex items-center gap-2 text-[10px] font-bold tracking-wider transition-all ${isColMenuOpen ? 'bg-violet-600 text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-white'}`}>
+                  <Settings2 className="h-3 w-3" /> Column <ChevronDown className={`h-3 w-3 transition-transform ${isColMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isColMenuOpen && (
+                  <div className="absolute top-12 right-0 z-[100] w-48 bg-white border border-slate-100 rounded-2xl shadow-2xl p-3 animate-in fade-in slide-in-from-top-3">
+                    <div className="flex items-center justify-between mb-3 border-b border-slate-50 pb-2"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Visibility</p><button onClick={() => setIsColMenuOpen(false)}><X className="h-4 w-4 text-slate-300" /></button></div>
+                    <div className="grid grid-cols-1 gap-1 max-h-[40vh] overflow-y-auto pr-1">
+                      {columnConfig.filter(c => c.key !== 'actions').map(col => (
+                        <button key={col.key} onClick={() => setVisibleColumns(prev => ({ ...prev, [col.key]: !prev[col.key] }))} className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-all text-xs font-semibold ${visibleColumns[col.key] ? 'bg-violet-600 text-white shadow-lg shadow-violet-200' : 'text-slate-500 hover:bg-slate-50'}`}>
+                          <span>{col.label}</span> {visibleColumns[col.key] ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Table Content - FIXED LAYOUT */}
-          {loading ? (
-            <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mb-4"></div>
-              <p className="text-blue-600">Loading inventory data...</p>
-            </div>
-          ) : error ? (
-            <div className="bg-red-50 p-6 rounded-md text-red-800 text-center">
-              {error}
-              <button className="underline ml-2" onClick={fetchData}>
-                Try again
-              </button>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <div className="max-h-[70vh] overflow-y-auto">
-                <table className="w-full border-collapse">
-                  <thead className="bg-gray-50 sticky top-0 z-10">
-                    <tr>
-                      {!showHistory && visibleColumns.action && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50">
-                          ACTION
-                        </th>
-                      )}
-                      {visibleColumns.serialNo && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          SERIAL NO
-                        </th>
-                      )}
-                      {visibleColumns.inventoryNo && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[120px]">
-                          INVENTORY NO
-                        </th>
-                      )}
-                      {visibleColumns.inventoryType && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[120px]">
-                          INVENTORY TYPE
-                        </th>
-                      )}
-                      {visibleColumns.department && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[120px]">
-                          DEPARTMENT
-                        </th>
-                      )}
-                      {visibleColumns.itemsName && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[150px]">
-                          ITEMS NAME
-                        </th>
-                      )}
-                      {visibleColumns.foodName && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[120px]">
-                          FOOD NAME
-                        </th>
-                      )}
-                      {visibleColumns.openingBalance && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          OPENING BALANCE
-                        </th>
-                      )}
-                      {visibleColumns.issueData && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          ISSUE DATA
-                        </th>
-                      )}
-                      {visibleColumns.returnData && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          RETURN DATA
-                        </th>
-                      )}
-                      {visibleColumns.damageItems && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          DAMAGE ITEMS
-                        </th>
-                      )}
-                      {visibleColumns.missingItems && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          MISSING ITEMS
-                        </th>
-                      )}
-                      {visibleColumns.closingBalance && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          CLOSING BALANCE
-                        </th>
-                      )}
-                      {visibleColumns.uploadFile && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[150px]">
-                          UPLOAD FILE
-                        </th>
-                      )}
-                      {visibleColumns.unit && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[80px]">
-                          UNIT
-                        </th>
-                      )}
-                      {visibleColumns.perUnitPrice && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[100px]">
-                          PER UNIT PRICE
-                        </th>
-                      )}
-                      {visibleColumns.eventDate && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[120px]">
-                          EVENT DATE
-                        </th>
-                      )}
-                      {visibleColumns.remarks && (
-                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200 bg-gray-50 min-w-[150px]">
-                          REMARKS
-                        </th>
-                      )}
+          <div className="flex-1 overflow-auto custom-scrollbar relative">
+            <table className="w-full text-center border-collapse border-separate border-spacing-0">
+              <thead className="sticky top-0 z-20">
+                <tr className="bg-violet-50">
+                  {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                    <th key={col.key} className="px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center">{col.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {isTableLoading ? (
+                  <tr><td colSpan={columnConfig.length} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
+                ) : getFilteredHistory().length === 0 ? (
+                  <tr><td colSpan={columnConfig.length} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
+                ) : (
+                  getFilteredHistory().map((row, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50/50 transition-all font-sans">
+                      {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                        <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
+                          {col.key === 'actions' ? (
+                            <button onClick={() => handleEditReturn(row)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
+                          ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
+                            <span className="text-slate-400">{formatDate(row[col.index])}</span>
+                          ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{row[col.index]}</span>
+                          ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{row[col.index]}</span>
+                          ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{row[col.index]}</span>
+                          ) : col.key === 'image' ? (
+                            row[col.index] && row[col.index] !== 'No Image' ? (
+                              <div className="relative flex justify-center group/img">
+                                <a href={row[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform"><img src={getDisplayableImageUrl(row[col.index])} alt="Item" className="h-full w-full object-cover" /></a>
+                              </div>
+                            ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
+                          ) : row[col.index] || '-'}
+                        </td>
+                      ))}
                     </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {showHistory ? (
-                      filteredHistoryData.length > 0 ? (
-                        filteredHistoryData.map((record) => (
-                          <tr key={record.id} className="hover:bg-gray-50">
-                            {visibleColumns.serialNo && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.serialNo || ''}
-                              </td>
-                            )}
-                            {visibleColumns.inventoryNo && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.inventoryNo || ''}
-                              </td>
-                            )}
-                            {visibleColumns.inventoryType && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.inventoryType || ''}
-                              </td>
-                            )}
-                            {visibleColumns.department && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.department || ''}
-                              </td>
-                            )}
-                            {visibleColumns.itemsName && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.itemsName || ''}
-                              </td>
-                            )}
-                            {visibleColumns.foodName && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.foodName || ''}
-                              </td>
-                            )}
-                            {visibleColumns.openingBalance && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.openingBalance || 0}
-                              </td>
-                            )}
-                            {visibleColumns.issueData && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.issueData || 0}
-                              </td>
-                            )}
-                            {visibleColumns.returnData && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.returnData || 0}
-                              </td>
-                            )}
-                            {visibleColumns.damageItems && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.damageItems || 0}
-                              </td>
-                            )}
-                            {visibleColumns.missingItems && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.missingItems || 0}
-                              </td>
-                            )}
-                            {visibleColumns.closingBalance && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.closingBalance || 0}
-                              </td>
-                            )}
-                            {visibleColumns.uploadFile && (
-                              <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                {record.uploadFile && record.uploadFile !== "No Image" ? (
-                                  <OptimizedImage
-                                    src={record.uploadFile}
-                                    alt="Item image"
-                                    className="h-16 w-24 object-cover cursor-pointer border border-gray-200 rounded-md hover:shadow-md transition-shadow"
-                                    onClick={() => window.open(record.uploadFile, '_blank')}
-                                  />
-                                ) : (
-                                  <span className="text-gray-400">-</span>
-                                )}
-                              </td>
-                            )}
-                            {visibleColumns.unit && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.unit || ''}
-                              </td>
-                            )}
-                            {visibleColumns.perUnitPrice && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {record.perUnitPrice || 0}
-                              </td>
-                            )}
-                            {visibleColumns.eventDate && (
-                              <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                {formatDate(record.eventDate)}
-                              </td>
-                            )}
-                            {visibleColumns.remarks && (
-                              <td className="px-3 py-3 text-xs text-gray-900 max-w-[150px] truncate" title={record.remarks}>
-                                {record.remarks || ''}
-                              </td>
-                            )}
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={getVisibleColumnsForCurrentSection().length} className="px-4 py-8 text-center text-gray-500">
-                            {selectedInventoryType || selectedDate ?
-                              `No history records found${selectedDate ? ` for ${formatDate(selectedDate)}` : ''}${selectedInventoryType ? ` in ${selectedInventoryType}` : ''}` :
-                              'No inventory history data available. Records will appear here after items are completed.'
-                            }
-                          </td>
-                        </tr>
-                      )
-                    ) : (
-                      filteredPendingData.length > 0 ? (
-                        filteredPendingData.map((record) => {
-                          const isSelected = selectedRows.has(record.id);
-                          const editData = editableData[record.id] || record;
-
-                          return (
-                            <tr key={record.id} className={`hover:bg-gray-50 ${isSelected ? "bg-blue-50" : ""}`}>
-                              {visibleColumns.action && (
-                                <td className="px-3 py-3 border-r border-gray-100">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => handleRowSelect(record.id)}
-                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                  />
-                                </td>
-                              )}
-                              {visibleColumns.serialNo && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.serialNo}
-                                </td>
-                              )}
-                              {visibleColumns.inventoryNo && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.inventoryNo}
-                                </td>
-                              )}
-                              {visibleColumns.inventoryType && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.inventoryType}
-                                </td>
-                              )}
-                              {visibleColumns.department && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.department}
-                                </td>
-                              )}
-                              {visibleColumns.itemsName && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.itemsName}
-                                </td>
-                              )}
-                              {visibleColumns.foodName && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.foodName}
-                                      onChange={(e) => handleEditableChange(record.id, "foodName", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      placeholder="Enter food name"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.foodName}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.openingBalance && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.openingBalance}
-                                      onChange={(e) => handleEditableChange(record.id, "openingBalance", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.openingBalance}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.issueData && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.issueData}
-                                      onChange={(e) => handleEditableChange(record.id, "issueData", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.issueData}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.returnData && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.returnData}
-                                      onChange={(e) => handleEditableChange(record.id, "returnData", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.returnData}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.damageItems && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.damageItems}
-                                      onChange={(e) => handleEditableChange(record.id, "damageItems", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.damageItems}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.missingItems && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.missingItems}
-                                      onChange={(e) => handleEditableChange(record.id, "missingItems", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.missingItems}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.closingBalance && (
-                                <td className="px-3 py-3 text-xs text-gray-900 border-r border-gray-100">
-                                  {record.closingBalance}
-                                </td>
-                              )}
-                              {visibleColumns.uploadFile && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <div className="flex flex-col items-center gap-2">
-                                      <input
-                                        type="file"
-                                        onChange={async (e) => {
-                                          if (e.target.files && e.target.files[0]) {
-                                            const file = e.target.files[0];
-                                            let processedFile = file;
-                                            if (file.size > 2 * 1024 * 1024) {
-                                              processedFile = await compressImage(file);
-                                            }
-                                            handleEditableChange(record.id, 'uploadFile', processedFile);
-                                          }
-                                        }}
-                                        className="w-full text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                                        accept="image/*"
-                                      />
-                                      {editData.uploadFile instanceof File ? (
-                                        <img
-                                          src={URL.createObjectURL(editData.uploadFile)}
-                                          alt="File preview"
-                                          className="h-16 w-24 object-cover border border-gray-200 rounded-md"
-                                        />
-                                      ) : (
-                                        typeof editData.uploadFile === 'string' && editData.uploadFile && editData.uploadFile !== "No Image" ? (
-                                          <OptimizedImage
-                                            src={editData.uploadFile}
-                                            alt="Current file"
-                                            className="h-16 w-24 object-cover border border-gray-200 rounded-md cursor-pointer hover:shadow-md transition-shadow"
-                                            onClick={() => window.open(editData.uploadFile, '_blank')}
-                                          />
-                                        ) : null
-                                      )}
-                                    </div>
-                                  ) : (
-                                    record.uploadFile && record.uploadFile !== "No Image" ? (
-                                      <div className="flex items-center justify-center">
-                                        <OptimizedImage
-                                          src={record.uploadFile}
-                                          alt="Uploaded file"
-                                          className="h-16 w-24 object-cover cursor-pointer border border-gray-200 rounded-md hover:shadow-md transition-shadow"
-                                          onClick={() => window.open(record.uploadFile, '_blank')}
-                                        />
-                                      </div>
-                                    ) : (
-                                      <span className="text-gray-400">-</span>
-                                    )
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.unit && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="text"
-                                      value={editData.unit}
-                                      onChange={(e) => handleEditableChange(record.id, "unit", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.unit}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.perUnitPrice && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="number"
-                                      value={editData.perUnitPrice}
-                                      onChange={(e) => handleEditableChange(record.id, "perUnitPrice", parseInt(e.target.value) || 0)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{record.perUnitPrice}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.eventDate && (
-                                <td className="px-3 py-3 text-xs border-r border-gray-100">
-                                  {isSelected ? (
-                                    <input
-                                      type="date"
-                                      value={editData.eventDate}
-                                      onChange={(e) => handleEditableChange(record.id, "eventDate", e.target.value)}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900">{formatDate(record.eventDate)}</span>
-                                  )}
-                                </td>
-                              )}
-                              {visibleColumns.remarks && (
-                                <td className="px-3 py-3 text-xs max-w-[150px]">
-                                  {isSelected ? (
-                                    <textarea
-                                      value={editData.remarks}
-                                      onChange={(e) => handleEditableChange(record.id, "remarks", e.target.value)}
-                                      rows={2}
-                                      className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
-                                    />
-                                  ) : (
-                                    <span className="text-gray-900 block truncate" title={record.remarks}>
-                                      {record.remarks}
-                                    </span>
-                                  )}
-                                </td>
-                              )}
-                            </tr>
-                          );
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={getVisibleColumnsForCurrentSection().length} className="px-4 py-8 text-center text-gray-500">
-                            {selectedInventoryType || selectedDate ? 
-                              `No pending inventory items found${selectedDate ? ` for date ${formatDate(selectedDate)}` : ''}${selectedInventoryType ? ` in ${selectedInventoryType}` : ''}` :
-                              'No pending inventory items found'
-                            }
-                          </td>
-                        </tr>
-                      )
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
+
+        {/* MODALS (Preserved as is but with small bug fixes found during review) */}
+        {(isIssueModalOpen || isReturnModalOpen) && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-6 backdrop-blur-sm bg-slate-900/40 animate-in fade-in duration-300">
+            <div className="relative w-full max-w-4xl bg-white rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between sticky top-0 z-10 bg-white">
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${isIssueModalOpen ? 'bg-violet-100 text-violet-600' : 'bg-fuchsia-100 text-fuchsia-600'}`}>
+                    {isIssueModalOpen ? <ClipboardList className="h-5 w-5" /> : <ArrowLeftRight className="h-5 w-5" />}
+                  </div>
+                  {isEditing ? 'Edit Return Record' : (isIssueModalOpen ? 'Issue Items to Party' : 'Return Items from Party')}
+                </h2>
+                <button onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="h-10 w-10 flex items-center justify-center rounded-xl hover:bg-slate-100 text-slate-400 transition-all font-sans"><X className="h-5 w-5" /></button>
+              </div>
+
+              <form onSubmit={isIssueModalOpen ? handleIssueSubmit : handleReturnSubmit} className="px-7 py-5 space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar font-sans">
+                {isIssueModalOpen && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type *</label>
+                      <select value={issueForm.inventoryType} onChange={(e) => setIssueForm(p => ({ ...p, inventoryType: e.target.value, itemsName: '' }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
+                        <option value="">Select inventory type</option>
+                        {dropdownOptions.inventoryTypeOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name *</label>
+                      <select value={issueForm.itemsName} onChange={(e) => {
+                        const val = e.target.value;
+                        const item = inventoryItems.find(i => i.itemsName === val && i.inventoryType === issueForm.inventoryType);
+                        if (item) {
+                          setIssueForm(prev => ({ ...prev, itemsName: val, department: item.department, inventoryNo: item.inventoryNo, openingBalance: item.openingBalance, perUnit: item.perUnit, unit: item.unit, imageUrl: item.imageUrl }));
+                          if (item.imageUrl) setImagePreview(getDisplayableImageUrl(item.imageUrl));
+                        }
+                      }} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
+                        <option value="">Select item name</option>
+                        {filteredItems.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {isReturnModalOpen && !isEditing && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Select Issue Record *</label>
+                    <select value={selectedIssueId} onChange={(e) => { setSelectedIssueId(e.target.value); const rec = issueHistory.find(r => r[0] === e.target.value); if (rec) handleSelectIssue(rec); }} required className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-violet-50/20">
+                      <option value="">-- Select Issued Item --</option>
+                      {issueHistory.map((row, idx) => <option key={idx} value={row[0]}>{row[5]} ({row[6]}) - {row[8]} {row[9]}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
+                  {(isIssueModalOpen ? [
+                    { label: 'Department', val: issueForm.department },
+                    { label: 'Inventory No', val: issueForm.inventoryNo },
+                    { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
+                  ] : [
+                    { label: 'Department', val: returnForm.department },
+                    { label: 'Party Name', val: returnForm.partyName },
+                    { label: 'Event Date', val: returnForm.eventDate }
+                  ]).map((f, i) => (
+                    <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
+                      <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
+                      <div className="h-10 flex items-center bg-white/50 px-3 rounded-lg border border-slate-200/50 text-xs font-bold text-slate-500 truncate">{f.val}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {isIssueModalOpen && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label><input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label><input type="date" value={issueForm.eventDate} onChange={(e) => setIssueForm(p => ({ ...p, eventDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
+                  </div>
+                )}
+
+                {isReturnModalOpen ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1"><label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Date *</label><input type="date" value={returnForm.returnDate} onChange={(e) => setReturnForm(p => ({ ...p, returnDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-medium" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issue Quantity</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.issueQty || '0'} {returnForm.unit}</div></div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Qty *</label>
+                        <input type="number" value={returnForm.returnData} onChange={(e) => { const v = e.target.value; const m = Number(returnForm.issueQty || 0); if (Number(v) > m) { setReturnForm(p => ({ ...p, returnData: m.toString() })); showToast(`Return quantity cannot exceed issued (${m})`, 'error'); } else setReturnForm(p => ({ ...p, returnData: v })); }} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-bold text-fuchsia-700 bg-fuchsia-50/20" />
+                      </div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage</label><input type="number" value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-orange-500 uppercase tracking-wide">Missing</label><input type="number" value={returnForm.missingItems} onChange={(e) => setReturnForm(p => ({ ...p, missingItems: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-orange-100 focus:border-orange-500 text-sm font-medium text-orange-700 bg-orange-50/20" /></div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
+                      <input 
+                        type="number" 
+                        value={issueForm.issueData} 
+                        onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
+                        required 
+                        className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${Number(issueForm.issueData) > Number(issueForm.openingBalance) ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
+                      />
+                      {Number(issueForm.issueData) > Number(issueForm.openingBalance) && (
+                        <p className="text-[10px] text-red-500 font-bold mt-1 animate-pulse px-1 flex items-center gap-1">
+                          <X className="h-2 w-2" /> Cannot exceed opening balance ({issueForm.openingBalance})
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Name</label><input type="text" value={issueForm.foodName} onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} placeholder="e.g. Lunch" className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                  </div>
+                )}
+
+                {isIssueModalOpen && (
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Price Per Unit *</label><input type="number" step="0.01" value={issueForm.perUnit} onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Unit *</label><input type="text" value={issueForm.unit} onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Total Cost</label><div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}</div></div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Image Attachment</label>
+                    <div className="h-11"><input type="file" id="inventory-upload" onChange={handleImageChange} className="hidden" accept="image/*" /><label htmlFor="inventory-upload" className="flex items-center justify-between px-3 h-full rounded-lg border border-slate-200 hover:border-violet-400 bg-white cursor-pointer"><div className="flex items-center gap-3 truncate"><UploadCloud className="h-4 w-4 text-slate-300" /><span>{selectedImage ? "New File" : "Upload Image"}</span></div><div className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-400 uppercase tracking-tighter shrink-0">Browse</div></label></div>
+                    {imagePreview && <div className="mt-2 p-2 bg-white border border-slate-100 rounded-xl shadow-sm"><div className="relative group rounded-lg overflow-hidden bg-slate-50 h-48"><img src={imagePreview} alt="Preview" className="w-full h-full object-contain" /><button type="button" onClick={() => { setImagePreview(null); setSelectedImage(null); }} className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-lg transition-all"><X className="h-3.5 w-3.5" /></button></div></div>}
+                  </div>
+                  <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Remarks</label><textarea value={isIssueModalOpen ? issueForm.remarks : returnForm.remarks} onChange={(e) => isIssueModalOpen ? setIssueForm(p => ({ ...p, remarks: e.target.value })) : setReturnForm(p => ({ ...p, remarks: e.target.value }))} placeholder="..." rows="3" className="w-full px-4 py-2 rounded-lg border border-slate-200 h-28 resize-none shadow-sm" /></div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                  <button type="button" onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
+                  <button 
+                    type="submit" 
+                    disabled={isSubmitting || (isIssueModalOpen && Number(issueForm.issueData) > Number(issueForm.openingBalance))} 
+                    className={`min-w-[140px] px-10 py-2.5 rounded-xl text-white text-sm font-bold shadow-xl transition-all flex items-center justify-center gap-2 ${isIssueModalOpen ? 'bg-violet-600' : 'bg-fuchsia-600'} hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Processing...</span></> : (isIssueModalOpen ? 'Issue Items' : 'Return Items')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+      `}} />
     </AdminLayout>
   );
-}
+};
 
 export default Inventory;

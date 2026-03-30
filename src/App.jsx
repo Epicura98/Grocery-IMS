@@ -6,6 +6,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-d
 import LoginPage from "./pages/LoginPage"
 import AdminDashboard from "./pages/admin/Dashboard"
 import AdminAssignTask from "./pages/admin/AssignTask"
+import Stock from "./pages/admin/Stock"
 import License from "./pages/License"
 import "./index.css"
 import Inventory from "./pages/Inventory"
@@ -39,7 +40,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
 
         {/* Dashboard redirect */}
-        <Route path="/dashboard" element={<Navigate to="/dashboard/assign-task" replace />} />
+        <Route path="/dashboard" element={<Navigate to="/dashboard/admin" replace />} />
 
         {/* Admin & User Dashboard route - keep this for any direct access */}
         <Route
@@ -51,6 +52,14 @@ function App() {
           }
         />
 
+        <Route
+          path="/dashboard/stock"
+          element={
+            <ProtectedRoute>
+              <Stock />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/dashboard/assign-task"
           element={
