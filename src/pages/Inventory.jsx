@@ -67,12 +67,16 @@ const Inventory = () => {
 
   // Form States
   const [issueForm, setIssueForm] = useState({
-    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
+    forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
   });
 
   const [returnForm, setReturnForm] = useState({
-    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: ''
+    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', damageRate: '0', rentingRate: '0', totalCost: '0', foodName: '', eventDate: '', partyName: '', returnData: '0', returnDate: new Date().toISOString().split('T')[0], issueQty: '0', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: ''
   });
+
+  const [modalFilterDate, setModalFilterDate] = useState('');
+  const [modalFilterParty, setModalFilterParty] = useState('');
+  const [modalFilterItem, setModalFilterItem] = useState('');
 
   const [selectedIssueId, setSelectedIssueId] = useState('');
 
@@ -97,6 +101,8 @@ const Inventory = () => {
     { key: 'item', label: 'Item Name', index: 5 },
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'eventDate', label: 'Event Date', index: 7 },
+    { key: 'eventType', label: 'Event Type', index: 17 },
+    { key: 'estimatedCost', label: 'Estimated Cost', index: 18 },
     { key: 'qty', label: 'Issue Qty', index: 8 },
     { key: 'image', label: 'Image', index: 15 }
   ] : [
@@ -109,6 +115,7 @@ const Inventory = () => {
     { key: 'qty', label: 'Return Qty', index: 10 },
     { key: 'damage', label: 'Damage', index: 11 },
     { key: 'missing', label: 'Missing', index: 12 },
+    { key: 'totalCost', label: 'Total Cost', index: 20 },
     { key: 'image', label: 'Image', index: 18 }
   ];
 
@@ -199,7 +206,7 @@ const Inventory = () => {
           inventoryType: row[2],
           department: row[3],
           itemsName: row[4],
-          openingBalance: parseNumber(row[7]),          // col H of INVENTORY (parsed as number)
+          openingBalance: parseNumber(row[6]),          // col-G of INVENTORY (parsed as number)
           unit: unitMap[row[1]] || 'PCS',            // col I of Add-Stock, matched by Inv No
           perUnit: parseNumber(row[8]),
           imageUrl: row[13] || '',
@@ -307,6 +314,24 @@ const Inventory = () => {
     });
   }, [returnHistory, searchTerm, returnFilterItem, returnFilterType, returnFilterParty, returnStartDate, returnEndDate]);
 
+  // Auto-calculate Return Qty and Total Cost
+  useEffect(() => {
+    if (!isReturnModalOpen) return;
+    const issueQty = Number(returnForm.issueQty || 0);
+    const damage = Number(returnForm.damageItems || 0);
+    const missing = Number(returnForm.missingItems || 0);
+    const damageRate = Number(returnForm.damageRate || 0);
+    const rentingRate = Number(returnForm.rentingRate || 0);
+
+    const returnQty = Math.max(0, issueQty - damage - missing);
+    const totalCost = ((damage + missing) * damageRate) + (returnQty * rentingRate);
+
+    setReturnForm(prev => {
+      if (prev.returnData === returnQty.toString() && prev.totalCost === totalCost.toFixed(2)) return prev;
+      return { ...prev, returnData: returnQty.toString(), totalCost: totalCost.toFixed(2) };
+    });
+  }, [returnForm.issueQty, returnForm.damageItems, returnForm.missingItems, returnForm.damageRate, returnForm.rentingRate, isReturnModalOpen]);
+
   const handleIssueSubmit = async (e) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
@@ -317,7 +342,7 @@ const Inventory = () => {
       const opening = parseFloat(issueForm.openingBalance) || 0;
       const consumed = parseFloat(issueForm.issueData) || 0;
       const closing = opening - consumed;
-      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', 'Inventory', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)];
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent'];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -327,7 +352,7 @@ const Inventory = () => {
       if (result.success) {
         showToast('Issue recorded successfully');
         setIsIssueModalOpen(false);
-        setIssueForm({ inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', foodName: '', issueData: '', remarks: '', imageUrl: '' });
+        setIssueForm({ forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: '' });
         setSelectedImage(null); setImagePreview(null); fetchHistory();
       } else throw new Error(result.error);
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
@@ -344,8 +369,8 @@ const Inventory = () => {
       partyName: issueRow[6],
       eventDate: toInputDate(issueRow[7]),
       issueQty: parseNumber(issueRow[8]),
-      unit: issueRow[9],
-      perUnit: parseNumber(issueRow[10]),
+      damageRate: parseNumber(issueRow[9]),
+      rentingRate: parseNumber(issueRow[10]),
       openingBalance: parseNumber(issueRow[11]),
       closingBalance: parseNumber(issueRow[12]),
       foodName: issueRow[14],
@@ -356,7 +381,24 @@ const Inventory = () => {
 
   const handleEditReturn = (row) => {
     setReturnForm({
-      inventoryNo: row[2], inventoryType: row[3], department: row[4], itemsName: row[5], partyName: row[6], eventDate: toInputDate(row[7]), returnDate: toInputDate(row[8]), issueQty: row[9], returnData: row[10], damageItems: row[11], missingItems: row[12], unit: row[13], perUnit: row[14], openingBalance: row[15], closingBalance: row[16], remarks: row[19], imageUrl: row[18]
+      inventoryNo: row[2], 
+      inventoryType: row[3], 
+      department: row[4], 
+      itemsName: row[5], 
+      partyName: row[6], 
+      eventDate: toInputDate(row[7]), 
+      returnDate: toInputDate(row[8]), 
+      issueQty: row[9], 
+      returnData: row[10], 
+      damageItems: row[11], 
+      missingItems: row[12], 
+      damageRate: row[13], 
+      rentingRate: row[14], 
+      openingBalance: row[15], 
+      closingBalance: row[16], 
+      remarks: row[19], 
+      imageUrl: row[18],
+      totalCost: row[20] || '0'
     });
     setEditingSerialNo(row[1]); setOriginalTimestamp(row[0]); setIsEditing(true); setIsReturnModalOpen(true); setImagePreview(getDisplayableImageUrl(row[18]));
   };
@@ -378,7 +420,29 @@ const Inventory = () => {
         if (dmyMatch) { const [, d, mo, y] = dmyMatch; return `${d}-${MONTHS[parseInt(mo, 10) - 1]}-${y}`; }
         return s;
       };
-      const baseRowData = [isEditing ? originalTimestamp : localTimestamp, isEditing ? editingSerialNo : "", returnForm.inventoryNo, returnForm.inventoryType, returnForm.department, returnForm.itemsName, returnForm.partyName, toSheetDate(returnForm.eventDate), toSheetDate(returnForm.returnDate), returnForm.issueQty, returnForm.returnData, returnForm.damageItems, returnForm.missingItems, returnForm.unit, returnForm.perUnit, returnForm.openingBalance, returnForm.closingBalance, (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), imageUrl, returnForm.remarks];
+      const baseRowData = [
+        isEditing ? originalTimestamp : localTimestamp, 
+        isEditing ? editingSerialNo : "", 
+        returnForm.inventoryNo, 
+        returnForm.inventoryType, 
+        returnForm.department, 
+        returnForm.itemsName, 
+        returnForm.partyName, 
+        toSheetDate(returnForm.eventDate), 
+        toSheetDate(returnForm.returnDate), 
+        returnForm.issueQty, 
+        returnForm.returnData, 
+        returnForm.damageItems, 
+        returnForm.missingItems, 
+        returnForm.damageRate, 
+        returnForm.rentingRate, 
+        returnForm.openingBalance, 
+        returnForm.closingBalance, 
+        (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), 
+        imageUrl, 
+        returnForm.remarks,
+        returnForm.totalCost
+      ];
       const rowData = isEditing ? [...baseRowData, '', ''] : baseRowData;
       const response = await fetch(scriptUrl, {
         method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -388,8 +452,8 @@ const Inventory = () => {
       if (result.success) {
         showToast(isEditing ? 'Record updated successfully' : 'Return recorded successfully');
         setIsReturnModalOpen(false); setIsEditing(false); setEditingSerialNo(null); setOriginalTimestamp(null);
-        setReturnForm({ inventoryType: '', itemsName: '', department: '', inventoryNo: '', openingBalance: '', perUnit: '', unit: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '' });
-        setSelectedIssueId(''); setSelectedImage(null); setImagePreview(null); fetchHistory();
+        setReturnForm({ inventoryType: '', itemsName: '', department: '', inventoryNo: '', openingBalance: '', damageRate: '', rentingRate: '', totalCost: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '' });
+        setModalFilterDate(''); setModalFilterParty(''); setModalFilterItem(''); setSelectedImage(null); setImagePreview(null); fetchHistory();
       } else throw new Error(result.error);
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
   };
@@ -526,6 +590,7 @@ const Inventory = () => {
                           ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{row[col.index]}</span>
                           ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{row[col.index]}</span>
                           ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{row[col.index]}</span>
+                          ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
                           ) : col.key === 'image' ? (
                             row[col.index] && row[col.index] !== 'No Image' ? (
                               <div className="relative flex justify-center group/img">
@@ -559,11 +624,18 @@ const Inventory = () => {
 
               <form onSubmit={isIssueModalOpen ? handleIssueSubmit : handleReturnSubmit} className="px-7 py-5 space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar font-sans">
                 {isIssueModalOpen && (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">For *</label>
+                      <select value={issueForm.forType} onChange={(e) => setIssueForm(p => ({ ...p, forType: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-violet-700 bg-violet-50/20 transition-all">
+                        <option value="Rent">Rent</option>
+                        <option value="H3">H3</option>
+                      </select>
+                    </div>
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type *</label>
                       <select value={issueForm.inventoryType} onChange={(e) => setIssueForm(p => ({ ...p, inventoryType: e.target.value, itemsName: '' }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
-                        <option value="">Select inventory type</option>
+                        <option value="">Select type</option>
                         {dropdownOptions.inventoryTypeOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                       </select>
                     </div>
@@ -585,12 +657,55 @@ const Inventory = () => {
                 )}
 
                 {isReturnModalOpen && !isEditing && (
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Select Issue Record *</label>
-                    <select value={selectedIssueId} onChange={(e) => { setSelectedIssueId(e.target.value); const rec = issueHistory.find(r => r[0] === e.target.value); if (rec) handleSelectIssue(rec); }} required className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-violet-50/20">
-                      <option value="">-- Select Issued Item --</option>
-                      {issueHistory.map((row, idx) => <option key={idx} value={row[0]}>{row[5]} ({row[6]}) - {row[8]} {row[9]}</option>)}
-                    </select>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label>
+                      <select 
+                        value={modalFilterDate} 
+                        onChange={(e) => { 
+                          const d = e.target.value; 
+                          setModalFilterDate(d); setModalFilterParty(''); setModalFilterItem(''); 
+                          setReturnForm(p => ({ ...p, eventDate: d, partyName: '', itemsName: '' })); 
+                        }} 
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white"
+                      >
+                        <option value="">Select date</option>
+                        {[...new Set(issueHistory.map(row => row[7]).filter(Boolean))].sort().map(d => <option key={d} value={toInputDate(d)}>{formatDate(d)}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
+                      <select 
+                        value={modalFilterParty} 
+                        disabled={!modalFilterDate}
+                        onChange={(e) => { 
+                          const p = e.target.value; 
+                          setModalFilterParty(p); setModalFilterItem(''); 
+                          setReturnForm(prev => ({ ...prev, partyName: p, itemsName: '' })); 
+                        }} 
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
+                      >
+                        <option value="">Select party</option>
+                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate).map(r => r[6]).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name *</label>
+                      <select 
+                        value={modalFilterItem} 
+                        disabled={!modalFilterParty}
+                        onChange={(e) => { 
+                          const i = e.target.value; 
+                          setModalFilterItem(i); 
+                          const rec = issueHistory.find(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty && r[5] === i);
+                          if (rec) handleSelectIssue(rec);
+                        }} 
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
+                      >
+                        <option value="">Select item</option>
+                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty).map(r => r[5]).filter(Boolean))].sort().map(i => <option key={i} value={i}>{i}</option>)}
+                      </select>
+                    </div>
                   </div>
                 )}
 
@@ -601,8 +716,8 @@ const Inventory = () => {
                     { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
                   ] : [
                     { label: 'Department', val: returnForm.department },
-                    { label: 'Party Name', val: returnForm.partyName },
-                    { label: 'Event Date', val: returnForm.eventDate }
+                    { label: 'Inventory Type', val: returnForm.inventoryType },
+                    { label: 'Inventory No', val: returnForm.inventoryNo }
                   ]).map((f, i) => (
                     <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
                       <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
@@ -612,9 +727,18 @@ const Inventory = () => {
                 </div>
 
                 {isIssueModalOpen && (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
                     <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label><input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
                     <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label><input type="date" value={issueForm.eventDate} onChange={(e) => setIssueForm(p => ({ ...p, eventDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Type *</label>
+                      <select value={issueForm.eventTime} onChange={(e) => setIssueForm(p => ({ ...p, eventTime: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium bg-white outline-none">
+                        <option value="">Select time</option>
+                        <option value="Breakfast">Breakfast</option>
+                        <option value="Lunch">Lunch</option>
+                        <option value="Dinner">Dinner</option>
+                      </select>
+                    </div>
                   </div>
                 )}
 
@@ -622,15 +746,21 @@ const Inventory = () => {
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1"><label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Date *</label><input type="date" value={returnForm.returnDate} onChange={(e) => setReturnForm(p => ({ ...p, returnDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-medium" /></div>
-                      <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issue Quantity</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.issueQty || '0'} {returnForm.unit}</div></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issue Quantity</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.issueQty || '0'}</div></div>
                     </div>
+                    
+                    {/* Row 1: Damage, Missing, Damage Rate */}
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Qty *</label>
-                        <input type="number" value={returnForm.returnData} onChange={(e) => { const v = e.target.value; const m = Number(returnForm.issueQty || 0); if (Number(v) > m) { setReturnForm(p => ({ ...p, returnData: m.toString() })); showToast(`Return quantity cannot exceed issued (${m})`, 'error'); } else setReturnForm(p => ({ ...p, returnData: v })); }} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-bold text-fuchsia-700 bg-fuchsia-50/20" />
-                      </div>
-                      <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage</label><input type="number" value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
-                      <div className="space-y-1"><label className="text-xs font-bold text-orange-500 uppercase tracking-wide">Missing</label><input type="number" value={returnForm.missingItems} onChange={(e) => setReturnForm(p => ({ ...p, missingItems: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-orange-100 focus:border-orange-500 text-sm font-medium text-orange-700 bg-orange-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage *</label><input type="number" value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-orange-500 uppercase tracking-wide">Missing *</label><input type="number" value={returnForm.missingItems} onChange={(e) => setReturnForm(p => ({ ...p, missingItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-orange-100 focus:border-orange-500 text-sm font-medium text-orange-700 bg-orange-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-slate-400 uppercase tracking-wide">Damage Rate (₹)</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.damageRate || '0'}</div></div>
+                    </div>
+
+                    {/* Row 2: Return Qty, Renting Rate, Total Cost */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1"><label className="text-xs font-bold text-fuchsia-400 uppercase tracking-wide">Return Qty (Calc)</label><div className="h-11 flex items-center bg-fuchsia-50/10 px-4 rounded-lg border border-fuchsia-100 text-sm font-bold text-fuchsia-400 italic">{returnForm.returnData || '0'}</div></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-slate-400 uppercase tracking-wide">Renting Rate (₹)</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.rentingRate || '0'}</div></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Total Cost (₹)</label><div className="h-11 flex items-center bg-emerald-50 px-4 rounded-lg border border-emerald-200 text-sm font-black text-emerald-700 shadow-inner-sm">₹{returnForm.totalCost || '0.00'}</div></div>
                     </div>
                   </>
                 ) : (
@@ -650,15 +780,15 @@ const Inventory = () => {
                         </p>
                       )}
                     </div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Name</label><input type="text" value={issueForm.foodName} onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} placeholder="e.g. Lunch" className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Venue Name</label><input type="text" value={issueForm.foodName} onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
                   </div>
                 )}
 
                 {isIssueModalOpen && (
                   <div className="grid grid-cols-3 gap-4">
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Price Per Unit *</label><input type="number" step="0.01" value={issueForm.perUnit} onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Unit *</label><input type="text" value={issueForm.unit} onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Total Cost</label><div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}</div></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (in ₹) *</label><input type="number" step="0.01" value={issueForm.perUnit} onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Damage/Missing Rate (in ₹) *</label><input type="number" step="0.01" value={issueForm.unit} onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
+                    <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Estimated Cost</label><div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}</div></div>
                   </div>
                 )}
 

@@ -82,11 +82,10 @@ export default function Dashboard() {
   const historyColumns = [
     { key: 'date', label: 'Date' },
     { key: 'serial', label: 'S.No' },
-    { key: 'itemName', label: 'Item Name' },
+    { key: 'itemName', label: 'Items Name' },
     { key: 'purchase', label: 'Total Purchased' },
     { key: 'opening', label: 'Opening Balance' },
     { key: 'closing', label: 'Closing Balance' },
-    { key: 'balance', label: 'Total Balance' },
     { key: 'issue', label: 'Total Issue' },
     { key: 'returns', label: 'Total Return' },
     { key: 'damage', label: 'Total Damage' },
@@ -123,22 +122,23 @@ export default function Dashboard() {
       const result = await response.json();
       if (result.success && result.data) {
         const validRows = result.data.slice(1).filter(row => row[1] && row[1].toString().trim() !== "");
-        setInventoryData(validRows.map((row, idx) => ({
-          id: `inv-${idx}`,
-          serial: row[0],
-          inventoryNo: row[1],
-          type: row[2],
-          department: row[3],
-          name: row[4],
-          purchase: parseNumber(row[5]),
-          opening: parseNumber(row[6]),
-          closing: parseNumber(row[7]),
-          issue: parseNumber(row[9]),
-          returns: parseNumber(row[10]),
-          damage: parseNumber(row[11]),
-          missing: parseNumber(row[12]),
-          imageUrl: row.find(cell => typeof cell === 'string' && (cell.includes('drive.google.com') || cell.includes('file/d/'))) || ''
-        })));
+          setInventoryData(validRows.map((row, idx) => ({
+            id: `inv-${idx}`,
+            serial: row[0],
+            inventoryNo: row[1],
+            type: row[2],
+            department: row[3],
+            name: row[4],
+            purchase: parseNumber(row[5]),
+            opening: parseNumber(row[6]),
+            closing: parseNumber(row[7]),
+            balance: parseNumber(row[8]),
+            issue: parseNumber(row[9]),
+            returns: parseNumber(row[10]),
+            damage: parseNumber(row[11]),
+            missing: parseNumber(row[12]),
+            imageUrl: row[13] || ''
+          })));
       }
     } catch (err) {
       console.error("Dashboard fetch error:", err);
@@ -274,15 +274,24 @@ export default function Dashboard() {
     });
   }, [currentData, searchTerm, filterType, filterDept, filterName, startDate, endDate, activeTab]);
 
+  const metricsFilteredData = useMemo(() => {
+    return currentData.filter(item => {
+      return (!filterType || item.type === filterType) &&
+             (!filterDept || item.department === filterDept) &&
+             (!filterName || item.name === filterName) &&
+             (activeTab === "today" ? true : dateMatchesRange(item.date, startDate, endDate));
+    });
+  }, [currentData, filterType, filterDept, filterName, startDate, endDate, activeTab]);
+
   const dashboardStats = useMemo(() => {
     let totals = { p:0, o:0, i:0, r:0, d:0, m:0 };
-    inventoryData.forEach(item => {
-      totals.p += item.purchase;
-      totals.o += item.opening;
-      totals.i += item.issue;
-      totals.r += item.returns;
-      totals.d += item.damage;
-      totals.m += item.missing;
+    metricsFilteredData.forEach(item => {
+      totals.p += item.purchase || 0;
+      totals.o += item.opening || 0;
+      totals.i += item.issue || 0;
+      totals.r += item.returns || 0;
+      totals.d += item.damage || 0;
+      totals.m += item.missing || 0;
     });
     return {
       totalPurchased: totals.p,
@@ -292,7 +301,7 @@ export default function Dashboard() {
       totalDamaged: totals.d,
       totalMissing: totals.m
     };
-  }, [inventoryData]);
+  }, [metricsFilteredData]);
 
   const MetricCard = ({ title, value, icon: Icon, color, loading: cardLoading }) => (
     <div
