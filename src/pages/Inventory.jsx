@@ -14,10 +14,13 @@ import {
   CheckCircle2,
   ArrowLeftRight,
   ClipboardList,
-  UploadCloud
+  UploadCloud,
+  FileText
 } from 'lucide-react';
 import AdminLayout from '../components/layout/AdminLayout';
 import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber } from '../utils/helpers';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const Inventory = () => {
   const [activeTab, setActiveTab] = useState('issued'); // 'issued' or 'return'
@@ -26,8 +29,10 @@ const Inventory = () => {
   const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [isColMenuOpen, setIsColMenuOpen] = useState(false);
+  const [isDateMenuOpen, setIsDateMenuOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
+  const [isReportGenerating, setIsReportGenerating] = useState(false);
 
   // Data State
   const [inventoryItems, setInventoryItems] = useState([]);
@@ -71,7 +76,7 @@ const Inventory = () => {
   });
 
   const [returnForm, setReturnForm] = useState({
-    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', damageRate: '0', rentingRate: '0', totalCost: '0', foodName: '', eventDate: '', partyName: '', returnData: '0', returnDate: new Date().toISOString().split('T')[0], issueQty: '0', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: ''
+    inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', damageRate: '0', rentingRate: '0', totalCost: '0', foodName: '', eventDate: '', partyName: '', returnData: '0', returnDate: new Date().toISOString().split('T')[0], issueQty: '0', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '', forType: ''
   });
 
   const [modalFilterDate, setModalFilterDate] = useState('');
@@ -79,6 +84,7 @@ const Inventory = () => {
   const [modalFilterItem, setModalFilterItem] = useState('');
 
   const [selectedIssueId, setSelectedIssueId] = useState('');
+  const [matchingIssuedRows, setMatchingIssuedRows] = useState([]);
 
   // Column Visibility & Config
   const [visibleColumns, setVisibleColumns] = useState({
@@ -89,16 +95,22 @@ const Inventory = () => {
     qty: true,
     party: true,
     eventDate: true,
+    eventType: true,
+    estimatedCost: true,
     returnDate: true,
     damage: true,
     missing: true,
-    image: true
+    totalCost: true,
+    image: true,
+    for: true
   });
 
   const columnConfig = activeTab === 'issued' ? [
     { key: 'date', label: 'Date', index: 0 },
+    { key: 'serial', label: 'Serial No.', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'for', label: 'For', index: 19 },
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'eventDate', label: 'Event Date', index: 7 },
     { key: 'eventType', label: 'Event Type', index: 17 },
@@ -108,8 +120,10 @@ const Inventory = () => {
   ] : [
     { key: 'actions', label: 'Actions', index: -1 },
     { key: 'date', label: 'Date', index: 0 },
+    { key: 'serial', label: 'Serial No.', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'for', label: 'For', index: 21 },
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'returnDate', label: 'Return Date', index: 8 },
     { key: 'qty', label: 'Return Qty', index: 10 },
@@ -314,6 +328,15 @@ const Inventory = () => {
     });
   }, [returnHistory, searchTerm, returnFilterItem, returnFilterType, returnFilterParty, returnStartDate, returnEndDate]);
 
+  const totalInventoryCost = useMemo(() => {
+    const data = activeTab === 'issued' ? filteredIssuedHistory : filteredReturnHistory;
+    const colIndex = activeTab === 'issued' ? 18 : 20;
+    return data.reduce((sum, row) => {
+      const val = parseFloat(row[colIndex] || 0);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+  }, [activeTab, filteredIssuedHistory, filteredReturnHistory]);
+
   // Auto-calculate Return Qty and Total Cost
   useEffect(() => {
     if (!isReturnModalOpen) return;
@@ -369,14 +392,39 @@ const Inventory = () => {
       partyName: issueRow[6],
       eventDate: toInputDate(issueRow[7]),
       issueQty: parseNumber(issueRow[8]),
-      damageRate: parseNumber(issueRow[9]),
-      rentingRate: parseNumber(issueRow[10]),
-      openingBalance: parseNumber(issueRow[11]),
-      closingBalance: parseNumber(issueRow[12]),
+      damageRate: parseNumber(issueRow[10]), // Corrected index for damageRate/rentingRate based on issued sheet
+      rentingRate: parseNumber(issueRow[11]),
+      openingBalance: parseNumber(issueRow[12]),
+      closingBalance: parseNumber(issueRow[13]),
       foodName: issueRow[14],
-      imageUrl: issueRow[15]
+      imageUrl: issueRow[15],
+      forType: issueRow[19]
     }));
     if (issueRow[15]) setImagePreview(getDisplayableImageUrl(issueRow[15]));
+  };
+
+  const handleSelectBatch = (rows) => {
+    if (!rows || rows.length === 0) return;
+    const first = rows[0];
+    const totalQty = rows.reduce((sum, r) => sum + parseNumber(r[8]), 0);
+    
+    setReturnForm(prev => ({
+      ...prev,
+      inventoryNo: first[2],
+      inventoryType: first[3],
+      department: first[4],
+      itemsName: first[5],
+      partyName: first[6],
+      eventDate: toInputDate(first[7]),
+      issueQty: totalQty,
+      damageRate: parseNumber(first[10]), 
+      rentingRate: parseNumber(first[11]),
+      foodName: first[14],
+      imageUrl: first[15],
+      forType: first[19]
+    }));
+    setMatchingIssuedRows(rows);
+    if (first[15]) setImagePreview(getDisplayableImageUrl(first[15]));
   };
 
   const handleEditReturn = (row) => {
@@ -398,7 +446,8 @@ const Inventory = () => {
       closingBalance: row[16], 
       remarks: row[19], 
       imageUrl: row[18],
-      totalCost: row[20] || '0'
+      totalCost: row[20] || '0',
+      forType: row[21] || ''
     });
     setEditingSerialNo(row[1]); setOriginalTimestamp(row[0]); setIsEditing(true); setIsReturnModalOpen(true); setImagePreview(getDisplayableImageUrl(row[18]));
   };
@@ -441,7 +490,8 @@ const Inventory = () => {
         (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), 
         imageUrl, 
         returnForm.remarks,
-        returnForm.totalCost
+        returnForm.totalCost,
+        returnForm.forType || ''
       ];
       const rowData = isEditing ? [...baseRowData, '', ''] : baseRowData;
       const response = await fetch(scriptUrl, {
@@ -459,6 +509,108 @@ const Inventory = () => {
   };
 
   const getFilteredHistory = () => activeTab === 'issued' ? filteredIssuedHistory : filteredReturnHistory;
+  
+  const handleGenerateReport = () => {
+    const isIssued = activeTab === 'issued';
+    const sourceData = isIssued ? issueHistory : returnHistory;
+    
+    // 1. Filter data (EXCLUDING search term as requested)
+    const filteredReportData = sourceData.filter(row => {
+      if (isIssued) {
+        const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
+        const matchesType = !issuedFilterType || row[3] === issuedFilterType;
+        const matchesDept = !issuedFilterDept || row[6] === issuedFilterDept;
+        let matchesDate = true;
+        if (issuedStartDate || issuedEndDate) {
+          const rowDate = parseRowDate(row[0]);
+          if (!rowDate || isNaN(rowDate)) return true;
+          if (issuedStartDate && rowDate < new Date(issuedStartDate)) matchesDate = false;
+          if (issuedEndDate) {
+            const end = new Date(issuedEndDate);
+            end.setHours(23, 59, 59, 999);
+            if (rowDate > end) matchesDate = false;
+          }
+        }
+        return matchesItem && matchesType && matchesDept && matchesDate;
+      } else {
+        const matchesItem = !returnFilterItem || row[5] === returnFilterItem;
+        const matchesType = !returnFilterType || row[3] === returnFilterType;
+        const matchesParty = !returnFilterParty || row[6] === returnFilterParty;
+        let matchesDate = true;
+        if (returnStartDate || returnEndDate) {
+          const rowDate = parseRowDate(row[0]);
+          if (!rowDate || isNaN(rowDate)) return true;
+          if (returnStartDate && rowDate < new Date(returnStartDate)) matchesDate = false;
+          if (returnEndDate) {
+            const end = new Date(returnEndDate);
+            end.setHours(23, 59, 59, 999);
+            if (rowDate > end) matchesDate = false;
+          }
+        }
+        return matchesItem && matchesType && matchesParty && matchesDate;
+      }
+    });
+
+    // 2. Identify visible columns (excluding actions and image for clean report)
+    const columnsToInclude = columnConfig.filter(col => 
+      visibleColumns[col.key] !== false && col.key !== 'actions' && col.key !== 'image'
+    );
+
+    const headers = columnsToInclude.map(col => col.label);
+    const body = filteredReportData.map(row => 
+      columnsToInclude.map(col => {
+        let val = row[col.index];
+        if (['date', 'eventDate', 'returnDate'].includes(col.key)) return formatDate(val);
+        if (['estimatedCost', 'totalCost'].includes(col.key)) return `Rs ${parseFloat(val || 0).toFixed(2)}`;
+        return val || '-';
+      })
+    );
+
+    // 3. Generate PDF - Portrait Layout (A4)
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const pageWidth = doc.internal.pageSize.width;
+    
+    // Add Title
+    doc.setFontSize(22);
+    doc.setTextColor(124, 58, 237); // violet-600
+    doc.text(`${isIssued ? 'ISSUED' : 'RETURN'} HISTORY REPORT`, 14, 15);
+    
+    // Top-right alignment for "Generated on"
+    doc.setFontSize(9);
+    doc.text(`Generated on: ${new Date().toLocaleString()}`, pageWidth - 14, 15, { align: 'right' });
+
+    setIsReportGenerating(true);
+
+    // Use a small timeout to allow UI to update (spinner to show) before heavy sync PDF construction
+    setTimeout(() => {
+      try {
+        autoTable(doc, {
+          startY: 22,
+          head: [headers],
+          body: body,
+          theme: 'grid',
+          headStyles: { fillColor: [124, 58, 237], textColor: 255, fontStyle: 'bold', halign: 'center' },
+          styles: { fontSize: 8, cellPadding: 3, halign: 'center', overflow: 'linebreak' },
+          alternateRowStyles: { fillColor: [249, 250, 251] },
+          margin: { top: 35 },
+          didDrawPage: (data) => {
+            const str = `Page ${doc.internal.getNumberOfPages()}`;
+            doc.setFontSize(8);
+            doc.setTextColor(150);
+            doc.text(str, doc.internal.pageSize.width - 25, doc.internal.pageSize.height - 10);
+          }
+        });
+
+        doc.save(`${isIssued ? 'Issued' : 'Return'}_History_${new Date().toISOString().split('T')[0]}.pdf`);
+        showToast('Report generated successfully');
+      } catch (err) {
+        console.error('Report error:', err);
+        showToast('Failed to generate report', 'error');
+      } finally {
+        setIsReportGenerating(false);
+      }
+    }, 100);
+  };
 
   return (
     <AdminLayout>
@@ -471,12 +623,26 @@ const Inventory = () => {
 
         <div className="flex items-center justify-between px-8 pt-6 pb-4">
           <div><h1 className="text-3xl font-bold text-slate-800 tracking-tight">Inventory Management</h1></div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">
+                {activeTab === 'issued' ? 'Issued Sum:' : 'Return Sum:'}
+              </span>
+              <span className="text-sm font-bold text-white">₹{totalInventoryCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
             <button onClick={() => { setIsIssueModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-violet-100">
               <ClipboardList className="h-4 w-4 text-white/70" /> Issue Form
             </button>
             <button onClick={() => { setIsReturnModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-white border border-fuchsia-200 text-fuchsia-600 rounded-lg flex items-center gap-2 text-sm font-semibold hover:bg-fuchsia-50 transition-all shadow-sm">
               <ArrowLeftRight className="h-4 w-4 text-fuchsia-400" /> Return Form
+            </button>
+            <button 
+              onClick={handleGenerateReport} 
+              disabled={isReportGenerating}
+              className={`h-10 px-5 bg-gradient-to-r from-indigo-600 to-violet-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold transition-all shadow-lg shadow-indigo-100 ${isReportGenerating ? 'opacity-70 cursor-not-allowed' : 'hover:opacity-90'}`}
+            >
+              {isReportGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4 text-white/70" />}
+              {activeTab === 'issued' ? 'Issue Report' : 'Return Report'}
             </button>
           </div>
         </div>
@@ -484,8 +650,8 @@ const Inventory = () => {
         <div className="mx-6 mb-6 bg-white rounded-xl shadow-sm border border-slate-100 flex flex-col flex-1 min-h-0 overflow-visible relative">
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100/50 rounded-t-xl">
             <div className="flex gap-1.5 bg-slate-100/80 p-1.5 rounded-2xl shadow-inner-sm">
-              <button onClick={() => setActiveTab('issued')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'issued' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Issued History</button>
-              <button onClick={() => setActiveTab('return')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'return' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Return History</button>
+              <button onClick={() => setActiveTab('issued')} className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'issued' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Issued History</button>
+              <button onClick={() => setActiveTab('return')} className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'return' ? 'bg-white text-fuchsia-600 shadow-xl shadow-fuchsia-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>Return History</button>
             </div>
 
             <div className="flex items-center gap-3">
@@ -498,10 +664,6 @@ const Inventory = () => {
                 <div className="flex items-center gap-1.5 p-1 bg-slate-50 rounded-2xl border border-slate-100">
                   {activeTab === 'issued' ? (
                     <>
-                      <select value={issuedFilterType} onChange={(e) => setIssuedFilterType(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
-                        <option value="">All Types</option>
-                        {issuedOptions.types.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
                       <select value={issuedFilterDept} onChange={(e) => setIssuedFilterDept(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
                         <option value="">All Party</option>
                         {issuedOptions.depts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -513,10 +675,6 @@ const Inventory = () => {
                     </>
                   ) : (
                     <>
-                      <select value={returnFilterType} onChange={(e) => setReturnFilterType(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
-                        <option value="">All Types</option>
-                        {returnOptions.types.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
                       <select value={returnFilterParty} onChange={(e) => setReturnFilterParty(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
                         <option value="">All Party</option>
                         {returnOptions.parties.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -527,20 +685,87 @@ const Inventory = () => {
                       </select>
                     </>
                   )}
-                  <div className="flex items-center gap-1.5 ml-1 px-2 border-l border-slate-200">
-                    <div className="relative group/date">
-                      <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 group-hover/date:text-fuchsia-500 transition-colors" />
-                      <input type="date" value={activeTab === 'issued' ? issuedStartDate : returnStartDate} onChange={(e) => activeTab === 'issued' ? setIssuedStartDate(e.target.value) : setReturnStartDate(e.target.value)} className="h-7.5 pl-7 pr-1.5 bg-slate-50 border border-slate-100 rounded-xl text-[9.5px] font-black text-slate-600 cursor-pointer hover:bg-white hover:border-fuchsia-200 transition-all shadow-sm" />
-                    </div>
-                    <span className="text-slate-300 text-[9px] font-black mx-0.5">TO</span>
-                    <div className="relative group/date">
-                      <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 group-hover/date:text-fuchsia-500 transition-colors" />
-                      <input type="date" value={activeTab === 'issued' ? issuedEndDate : returnEndDate} onChange={(e) => activeTab === 'issued' ? setIssuedEndDate(e.target.value) : setReturnEndDate(e.target.value)} className="h-7.5 pl-7 pr-1.5 bg-slate-50 border border-slate-100 rounded-xl text-[9.5px] font-black text-slate-600 cursor-pointer hover:bg-white hover:border-fuchsia-200 transition-all shadow-sm" />
-                    </div>
-                    {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterDept || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
-                      <button onClick={() => { if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterDept(""); setIssuedStartDate(""); setIssuedEndDate(""); } else { setReturnFilterItem(""); setReturnFilterType(""); setReturnFilterParty(""); setReturnStartDate(""); setReturnEndDate(""); } setSearchTerm(""); }} className="p-1 hover:bg-red-50 text-red-400 hover:text-red-500 rounded-lg transition-colors"><X className="h-3 w-3" /></button>
+                  <div className="relative border-l border-slate-200 ml-1 pl-1">
+                    <button
+                      onClick={() => setIsDateMenuOpen(!isDateMenuOpen)}
+                      className={`h-8 px-3 rounded-xl border border-slate-100 flex items-center gap-2 text-[10px] font-bold tracking-wider transition-all ${isDateMenuOpen || (activeTab === 'issued' ? (issuedStartDate || issuedEndDate) : (returnStartDate || returnEndDate)) ? 'bg-violet-600 text-white border-violet-600 shadow-lg shadow-violet-200' : 'bg-slate-50 text-slate-600 hover:bg-white'}`}
+                    >
+                      <Calendar className={`h-3 w-3 ${isDateMenuOpen || (activeTab === 'issued' ? (issuedStartDate || issuedEndDate) : (returnStartDate || returnEndDate)) ? 'text-white' : 'text-slate-400'}`} />
+                      <span>{activeTab === 'issued' ? (issuedStartDate || issuedEndDate ? `${issuedStartDate || '...'} - ${issuedEndDate || '...'}` : 'DATE') : (returnStartDate || returnEndDate ? `${returnStartDate || '...'} - ${returnEndDate || '...'}` : 'DATE')}</span>
+                      <ChevronDown className={`h-3 w-3 transition-transform duration-300 ${isDateMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isDateMenuOpen && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-[140]" 
+                          onClick={() => setIsDateMenuOpen(false)}
+                        />
+                        <div className="absolute top-10 right-0 z-[160] w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                          <div className="flex items-center justify-between mb-3 border-b border-slate-50 pb-2">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{activeTab === 'issued' ? 'Issued History' : 'Return History'}</p>
+                            {(activeTab === 'issued' ? (issuedStartDate || issuedEndDate) : (returnStartDate || returnEndDate)) && (
+                              <button 
+                                onClick={() => { if (activeTab === 'issued') { setIssuedStartDate(""); setIssuedEndDate(""); } else { setReturnStartDate(""); setReturnEndDate(""); } }}
+                                className="text-[9px] font-bold text-red-500 hover:text-red-600 uppercase tracking-tighter"
+                              >
+                                Clear Dates
+                              </button>
+                            )}
+                          </div>
+                          
+                          <div className="space-y-3">
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">From</label>
+                              <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                                <input
+                                  type="date"
+                                  value={activeTab === 'issued' ? issuedStartDate : returnStartDate}
+                                  onChange={(e) => activeTab === 'issued' ? setIssuedStartDate(e.target.value) : setReturnStartDate(e.target.value)}
+                                  className="w-full h-9 pl-9 pr-3 bg-slate-50 border border-slate-100 rounded-xl text-xs font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">To</label>
+                              <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                                <input
+                                  type="date"
+                                  value={activeTab === 'issued' ? issuedEndDate : returnEndDate}
+                                  onChange={(e) => activeTab === 'issued' ? setIssuedEndDate(e.target.value) : setReturnEndDate(e.target.value)}
+                                  className="w-full h-9 pl-9 pr-3 bg-slate-50 border border-slate-100 rounded-xl text-xs font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => setIsDateMenuOpen(false)}
+                            className="w-full mt-4 py-2 bg-violet-600 text-white text-[10px] font-bold rounded-xl shadow-lg shadow-violet-100 hover:bg-violet-700 transition-all uppercase tracking-widest"
+                          >
+                            Apply Filter
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
+
+                  {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterDept || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
+                    <button
+                      onClick={() => {
+                        if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterDept(""); setIssuedStartDate(""); setIssuedEndDate(""); } 
+                        else { setReturnFilterItem(""); setReturnFilterType(""); setReturnFilterParty(""); setReturnStartDate(""); setReturnEndDate(""); }
+                        setSearchTerm("");
+                      }}
+                      className="p-1 ml-1 hover:bg-red-50 text-red-400 hover:text-red-500 rounded-lg transition-colors border-l border-slate-100 pl-2"
+                      title="Clear All Filters"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -569,7 +794,7 @@ const Inventory = () => {
               <thead className="sticky top-0 z-20">
                 <tr className="bg-violet-50">
                   {columnConfig.map(col => visibleColumns[col.key] !== false && (
-                    <th key={col.key} className="px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center">{col.label}</th>
+                    <th key={col.key} className={`px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center ${['date', 'eventDate', 'returnDate'].includes(col.key) ? 'min-w-[120px]' : ''}`}>{col.label}</th>
                   ))}
                 </tr>
               </thead>
@@ -586,7 +811,7 @@ const Inventory = () => {
                           {col.key === 'actions' ? (
                             <button onClick={() => handleEditReturn(row)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
                           ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
-                            <span className="text-slate-400">{formatDate(row[col.index])}</span>
+                            <span className="text-slate-400 whitespace-nowrap">{formatDate(row[col.index])}</span>
                           ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{row[col.index]}</span>
                           ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{row[col.index]}</span>
                           ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{row[col.index]}</span>
@@ -697,8 +922,9 @@ const Inventory = () => {
                         onChange={(e) => { 
                           const i = e.target.value; 
                           setModalFilterItem(i); 
-                          const rec = issueHistory.find(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty && r[5] === i);
-                          if (rec) handleSelectIssue(rec);
+                          const matches = issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty && r[5] === i);
+                          if (matches.length > 0) handleSelectBatch(matches);
+                          else setMatchingIssuedRows([]);
                         }} 
                         className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
                       >
@@ -709,22 +935,71 @@ const Inventory = () => {
                   </div>
                 )}
 
-                <div className="grid grid-cols-3 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
-                  {(isIssueModalOpen ? [
-                    { label: 'Department', val: issueForm.department },
-                    { label: 'Inventory No', val: issueForm.inventoryNo },
-                    { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
-                  ] : [
-                    { label: 'Department', val: returnForm.department },
-                    { label: 'Inventory Type', val: returnForm.inventoryType },
-                    { label: 'Inventory No', val: returnForm.inventoryNo }
-                  ]).map((f, i) => (
-                    <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
-                      <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
-                      <div className="h-10 flex items-center bg-white/50 px-3 rounded-lg border border-slate-200/50 text-xs font-bold text-slate-500 truncate">{f.val}</div>
-                    </div>
-                  ))}
-                </div>
+                {isIssueModalOpen ? (
+                  <div className="grid grid-cols-3 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
+                    {[
+                      { label: 'Department', val: issueForm.department },
+                      { label: 'Inventory No', val: issueForm.inventoryNo },
+                      { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
+                    ].map((f, i) => (
+                      <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
+                        <div className="h-10 flex items-center bg-white/50 px-3 rounded-lg border border-slate-200/50 text-xs font-bold text-slate-500 truncate">{f.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {!isEditing && matchingIssuedRows.length > 0 ? (
+                      <>
+                        <div className="flex items-center justify-between px-2 mb-1">
+                          <div className="flex flex-col">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">For (Issue Type)</label>
+                            <div className="text-[11px] font-bold text-slate-700 ml-1">{returnForm.forType || '-'}</div>
+                          </div>
+                          <div className="text-[10px] font-extrabold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 uppercase tracking-widest">
+                            {matchingIssuedRows.length}  Events  Combined
+                          </div>
+                        </div>
+                        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                          <table className="w-full text-left text-xs table-fixed">
+                            <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-200">
+                              <tr>
+                                <th className="px-4 py-2.5 border-r border-slate-200/50 w-[20%] text-center">S. No.</th>
+                                <th className="px-4 py-2.5 border-r border-slate-200/50 w-[30%]">Inv. Type</th>
+                                <th className="px-4 py-2.5 border-r border-slate-200/50 w-[30%]">Event Type</th>
+                                <th className="px-4 py-2.5 w-[20%] text-center">Qty</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {matchingIssuedRows.map((row, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                  <td className="px-4 py-2.5 border-r border-slate-200/50 text-center font-bold text-slate-400 truncate">{row[1] || '-'}</td>
+                                  <td className="px-4 py-2.5 border-r border-slate-200/50 font-bold text-slate-600 truncate">{row[3] || '-'}</td>
+                                  <td className="px-4 py-2.5 border-r border-slate-200/50 font-bold text-slate-700 truncate">{row[17] || 'Regular'}</td>
+                                  <td className="px-4 py-2.5 text-center font-black text-violet-600">{row[8]}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
+                        {[
+                          { label: 'Department', val: returnForm.department },
+                          { label: 'Inventory Type', val: returnForm.inventoryType },
+                          { label: 'Inventory No', val: returnForm.inventoryNo }
+                        ].map((f, i) => (
+                          <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
+                            <div className="h-10 flex items-center bg-white/50 px-3 rounded-lg border border-slate-200/50 text-xs font-bold text-slate-500 truncate">{f.val}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {isIssueModalOpen && (
                   <div className="grid grid-cols-3 gap-4">

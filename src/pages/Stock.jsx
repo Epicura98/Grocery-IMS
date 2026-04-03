@@ -30,8 +30,8 @@ import {
   TrendingUp,
   Settings2
 } from "lucide-react";
-import AdminLayout from "../../components/layout/AdminLayout";
-import { formatDate, compressImage, parseRowDate } from "../../utils/helpers";
+import AdminLayout from "../components/layout/AdminLayout";
+import { formatDate, compressImage, parseRowDate } from "../utils/helpers";
 
 export default function Stock() {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -44,6 +44,7 @@ export default function Stock() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
   const [isColMenuOpen, setIsColMenuOpen] = useState(false);
+  const [isDateMenuOpen, setIsDateMenuOpen] = useState(false);
 
   // Data State
   const [masterData, setMasterData] = useState([]);
@@ -73,6 +74,7 @@ export default function Stock() {
     unit: true,
     image: true,
     perUnit: true,
+    costPrice: true,
     remarks: true
   });
 
@@ -84,8 +86,9 @@ export default function Stock() {
     { key: 'vendor', label: 'Vendor Name', index: 6 },
     { key: 'balance', label: 'Opening Balance', index: 7 },
     { key: 'unit', label: 'Unit', index: 8 },
-    { key: 'image', label: 'Image', index: 10 },
     { key: 'perUnit', label: 'Per Unit (₹)', index: 9 },
+    { key: 'costPrice', label: 'Cost Price (₹)', index: 12 },
+    { key: 'image', label: 'Image', index: 10 },
     { key: 'remarks', label: 'Remarks', index: 11 }
   ];
 
@@ -256,6 +259,13 @@ export default function Stock() {
       return matchesSearch && matchesType && matchesDept && matchesItem && matchesDate;
     });
   }, [stockRows, searchTerm, filterType, filterDept, filterItem, startDate, endDate]);
+
+  const totalStockCost = useMemo(() => {
+    return filteredStockRows.reduce((sum, row) => {
+      const val = parseFloat(row[12] || 0);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+  }, [filteredStockRows]);
 
   useEffect(() => {
     if (form.inventoryType && masterData.length > 0) {
@@ -476,7 +486,11 @@ export default function Stock() {
             <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Stock Management</h1>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">Overall Sum:</span>
+              <span className="text-sm font-bold text-white">₹{totalStockCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
             <button
               onClick={() => { setIsModalOpen(true); setImagePreview(null); setSelectedImage(null); }}
               className="h-10 px-5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold hover:opacity-90 transition-all active:scale-95 shadow-lg shadow-violet-100"
@@ -498,9 +512,7 @@ export default function Stock() {
         <div className="mx-6 mb-6 bg-white rounded-xl shadow-sm border border-slate-100 flex flex-col flex-1 min-h-0 overflow-visible relative">
 
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100/50 rounded-t-xl">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900 tracking-tight">Stock History</h2>
-            </div>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Stock History</h2>
 
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-3">
@@ -526,15 +538,6 @@ export default function Stock() {
                     {typeOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
 
-                  <select
-                    value={filterDept}
-                    onChange={(e) => setFilterDept(e.target.value)}
-                    className="h-8 pl-2 pr-8 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-600 appearance-none cursor-pointer hover:border-violet-300 transition-all min-w-[90px]"
-                    style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}
-                  >
-                    <option value="">All Dept</option>
-                    {deptOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
 
                   <select
                     value={filterItem}
@@ -546,38 +549,85 @@ export default function Stock() {
                     {itemOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
 
-                  <div className="flex items-center gap-1 ml-1 px-1.5 border-l border-slate-200">
-                    <div className="relative">
-                      <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 text-slate-400" />
-                      <input
-                        type="date"
-                        value={startDate}
-                        onChange={(e) => setStartDate(e.target.value)}
-                        className="h-7 pl-6 pr-1 bg-white border border-slate-100 rounded-lg text-[9px] font-bold text-slate-600 cursor-pointer"
-                      />
-                    </div>
-                    <span className="text-slate-300 text-[9px] font-black">TO</span>
-                    <div className="relative">
-                      <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 text-slate-400" />
-                      <input
-                        type="date"
-                        value={endDate}
-                        onChange={(e) => setEndDate(e.target.value)}
-                        className="h-7 pl-6 pr-1 bg-white border border-slate-100 rounded-lg text-[9px] font-bold text-slate-600 cursor-pointer"
-                      />
-                    </div>
-                    {(startDate || endDate || filterType || filterDept || filterItem) && (
-                      <button
-                        onClick={() => {
-                          setFilterType(""); setFilterDept(""); setFilterItem(""); setStartDate(""); setEndDate("");
-                        }}
-                        className="p-1 hover:bg-red-50 text-red-400 hover:text-red-500 rounded-lg transition-colors"
-                        title="Clear Filters"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
+                  <div className="relative border-l border-slate-200 ml-1 pl-1">
+                    <button
+                      onClick={() => setIsDateMenuOpen(!isDateMenuOpen)}
+                      className={`h-8 px-3 rounded-xl border border-slate-100 flex items-center gap-2 text-[10px] font-bold tracking-wider transition-all ${isDateMenuOpen || startDate || endDate ? 'bg-violet-600 text-white border-violet-600 shadow-lg shadow-violet-200' : 'bg-slate-50 text-slate-600 hover:bg-white'}`}
+                    >
+                      <Calendar className={`h-3 w-3 ${isDateMenuOpen || startDate || endDate ? 'text-white' : 'text-slate-400'}`} />
+                      <span>{startDate || endDate ? `${startDate || '...'} - ${endDate || '...'}` : 'DATE'}</span>
+                      <ChevronDown className={`h-3 w-3 transition-transform duration-300 ${isDateMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isDateMenuOpen && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-[90]" 
+                          onClick={() => setIsDateMenuOpen(false)}
+                        />
+                        <div className="absolute top-10 right-0 z-[100] w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                          <div className="flex items-center justify-between mb-3 border-b border-slate-50 pb-2">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Date Range</p>
+                            {(startDate || endDate) && (
+                              <button 
+                                onClick={() => { setStartDate(""); setEndDate(""); }}
+                                className="text-[9px] font-bold text-red-500 hover:text-red-600 uppercase tracking-tighter"
+                              >
+                                Clear Dates
+                              </button>
+                            )}
+                          </div>
+                          
+                          <div className="space-y-3">
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">From</label>
+                              <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                                <input
+                                  type="date"
+                                  value={startDate}
+                                  onChange={(e) => setStartDate(e.target.value)}
+                                  className="w-full h-9 pl-9 pr-3 bg-slate-50 border border-slate-100 rounded-xl text-xs font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">To</label>
+                              <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                                <input
+                                  type="date"
+                                  value={endDate}
+                                  onChange={(e) => setEndDate(e.target.value)}
+                                  className="w-full h-9 pl-9 pr-3 bg-slate-50 border border-slate-100 rounded-xl text-xs font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => setIsDateMenuOpen(false)}
+                            className="w-full mt-4 py-2 bg-violet-600 text-white text-[10px] font-bold rounded-xl shadow-lg shadow-violet-100 hover:bg-violet-700 transition-all uppercase tracking-widest"
+                          >
+                            Apply Filter
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
+
+                  {(startDate || endDate || filterType || filterDept || filterItem) && (
+                    <button
+                      onClick={() => {
+                        setFilterType(""); setFilterDept(""); setFilterItem(""); setStartDate(""); setEndDate("");
+                      }}
+                      className="p-1 ml-1 hover:bg-red-50 text-red-400 hover:text-red-500 rounded-lg transition-colors border-l border-slate-100 pl-2"
+                      title="Clear All Filters"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -677,6 +727,10 @@ export default function Stock() {
                             )
                           ) : col.key === 'serial' ? (
                             <span className="text-slate-500 font-medium">{row[col.index]}</span>
+                          ) : col.key === 'perUnit' ? (
+                            <span className="font-bold text-blue-600 whitespace-nowrap">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
+                          ) : col.key === 'costPrice' ? (
+                            <span className="font-bold text-emerald-600 whitespace-nowrap">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
                           ) : col.key === 'item' ? (
                             <span className="font-bold text-slate-800">{row[col.index]}</span>
                           ) : (

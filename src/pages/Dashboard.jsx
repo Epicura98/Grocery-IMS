@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { formatDate, parseNumber } from "../../utils/helpers";
+import { formatDate, parseNumber } from "../utils/helpers";
 import {
   TrendingUp,
   Package,
@@ -26,7 +26,7 @@ import {
   X,
   Calendar
 } from "lucide-react";
-import AdminLayout from "../../components/layout/AdminLayout";
+import AdminLayout from "../components/layout/AdminLayout";
 
 
 export default function Dashboard() {

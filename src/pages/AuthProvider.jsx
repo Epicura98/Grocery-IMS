@@ -3,8 +3,7 @@
 import { useState, useEffect } from "react"
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom"
 import LoginPage from "./pages/LoginPage"
-import AdminDashboard from "./pages/admin/Dashboard"
-import AdminAssignTask from "./pages/admin/AssignTask"
+import AdminDashboard from "./Dashboard"
 import UserDashboard from "./pages/user/Dashboard"
 import UserTasks from "./pages/user/Tasks"
 import AdminLayout from "./components/layout/AdminLayout"
@@ -93,16 +92,6 @@ function App() {
             <PrivateRoute allowedRoles={['admin']}>
               <AdminLayout darkMode={darkMode} toggleDarkMode={toggleDarkMode}>
                 <AdminDashboard />
-              </AdminLayout>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/admin/assign-task"
-          element={
-            <PrivateRoute allowedRoles={['admin']}>
-              <AdminLayout darkMode={darkMode} toggleDarkMode={toggleDarkMode}>
-                <AdminAssignTask />
               </AdminLayout>
             </PrivateRoute>
           }

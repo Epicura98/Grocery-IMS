@@ -4,9 +4,8 @@
 import { useState, useEffect } from "react"
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom"
 import LoginPage from "./pages/LoginPage"
-import AdminDashboard from "./pages/admin/Dashboard"
-import AdminAssignTask from "./pages/admin/AssignTask"
-import Stock from "./pages/admin/Stock"
+import AdminDashboard from "./pages/Dashboard"
+import Stock from "./pages/Stock"
 import License from "./pages/License"
 import "./index.css"
 import Inventory from "./pages/Inventory"
@@ -57,14 +56,6 @@ function App() {
           element={
             <ProtectedRoute>
               <Stock />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/dashboard/assign-task"
-          element={
-            <ProtectedRoute>
-              <AdminAssignTask />
             </ProtectedRoute>
           }
         />
@@ -140,7 +131,6 @@ function App() {
         {/* Backward compatibility redirects */}
         <Route path="/admin/*" element={<Navigate to="/dashboard/admin" replace />} />
         <Route path="/admin/dashboard" element={<Navigate to="/dashboard/admin" replace />} />
-        <Route path="/admin/assign-task" element={<Navigate to="/dashboard/assign-task" replace />} />
         <Route path="/user/*" element={<Navigate to="/dashboard/admin" replace />} />
 
         {/* Catch all route */}
