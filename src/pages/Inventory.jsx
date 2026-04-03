@@ -43,6 +43,8 @@ const Inventory = () => {
     departmentOptions: [],
     unitOptions: []
   });
+  const [masterData, setMasterData] = useState([]);
+  const [stockRows, setStockRows] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
 
   // Filter States - Issued History
@@ -194,12 +196,22 @@ const Inventory = () => {
       }
       if (dropdownResult.success && dropdownResult.data) {
         const rows = dropdownResult.data.slice(1);
+        setMasterData(rows);
         setDropdownOptions({
           inventoryTypeOptions: [...new Set(rows.map(row => row[3]).filter(Boolean))],
-          departmentOptions: [...new Set(rows.map(row => row[1]).filter(Boolean))],
+          departmentOptions: [...new Set(rows.map(row => row[2]).filter(Boolean))],
           unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))]
         });
       }
+      // Fetch Add-Stock to get stock-only options for Issue form
+      try {
+        const stockRes = await fetch(`${scriptUrl}?action=fetch&sheet=Add-Stock&sheetName=Add-Stock&spreadsheetId=${spreadsheetId}`).then(r => r.json());
+        if (stockRes.success && stockRes.data) {
+          const rows = stockRes.data.slice(1);
+          setStockRows(rows);
+        }
+      } catch (e) { console.warn('Could not fetch Add-Stock for dropdown filtering:', e); }
+
       if (invRes.success && invRes.data) {
         // Fetch Add-Stock to get the Unit column (col I = index 8), matched by Inv No (col C = index 2)
         let unitMap = {};
@@ -256,10 +268,15 @@ const Inventory = () => {
   useEffect(() => {
     const currentType = isIssueModalOpen ? issueForm.inventoryType : returnForm.inventoryType;
     if (currentType) {
-      const uniqueItems = [...new Set(inventoryItems.filter(item => item.inventoryType === currentType).map(item => item.itemsName))].filter(Boolean);
-      setFilteredItems(uniqueItems);
+      if (isIssueModalOpen) {
+        const uniqueItemsFromStock = [...new Set(stockRows.filter(row => row[3] === currentType).map(row => row[5]))].filter(Boolean);
+        setFilteredItems(uniqueItemsFromStock);
+      } else {
+        const uniqueItems = [...new Set(inventoryItems.filter(item => item.inventoryType === currentType).map(item => item.itemsName))].filter(Boolean);
+        setFilteredItems(uniqueItems);
+      }
     } else { setFilteredItems([]); }
-  }, [issueForm.inventoryType, returnForm.inventoryType, inventoryItems, isIssueModalOpen, isReturnModalOpen]);
+  }, [issueForm.inventoryType, returnForm.inventoryType, inventoryItems, stockRows, isIssueModalOpen, isReturnModalOpen]);
 
   // Derive Options for Filters
   const issuedOptions = useMemo(() => {
@@ -626,7 +643,7 @@ const Inventory = () => {
           <div className="flex items-center gap-4">
             <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
               <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">
-                {activeTab === 'issued' ? 'Issued Sum:' : 'Return Sum:'}
+                {activeTab === 'issued' ? 'Issue Amount:' : 'Return Amount:'}
               </span>
               <span className="text-sm font-bold text-white">₹{totalInventoryCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
@@ -861,7 +878,7 @@ const Inventory = () => {
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type *</label>
                       <select value={issueForm.inventoryType} onChange={(e) => setIssueForm(p => ({ ...p, inventoryType: e.target.value, itemsName: '' }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
                         <option value="">Select type</option>
-                        {dropdownOptions.inventoryTypeOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        {[...new Set(stockRows.map(row => row[3]).filter(Boolean))].sort().map(opt => <option key={opt} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div className="space-y-1">
@@ -869,8 +886,19 @@ const Inventory = () => {
                       <select value={issueForm.itemsName} onChange={(e) => {
                         const val = e.target.value;
                         const item = inventoryItems.find(i => i.itemsName === val && i.inventoryType === issueForm.inventoryType);
+                        const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(val).trim().toLowerCase());
+                        
                         if (item) {
-                          setIssueForm(prev => ({ ...prev, itemsName: val, department: item.department, inventoryNo: item.inventoryNo, openingBalance: item.openingBalance, perUnit: item.perUnit, unit: item.unit, imageUrl: item.imageUrl }));
+                          setIssueForm(prev => ({ 
+                            ...prev, 
+                            itemsName: val, 
+                            department: item.department, 
+                            inventoryNo: item.inventoryNo, 
+                            openingBalance: item.openingBalance, 
+                            perUnit: masterRow ? masterRow[5] : item.perUnit, 
+                            unit: masterRow ? masterRow[6] : item.unit, 
+                            imageUrl: item.imageUrl 
+                          }));
                           if (item.imageUrl) setImagePreview(getDisplayableImageUrl(item.imageUrl));
                         }
                       }} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
@@ -1017,7 +1045,120 @@ const Inventory = () => {
                   </div>
                 )}
 
-                {isReturnModalOpen ? (
+                {isIssueModalOpen && (
+                  <div className="space-y-4">
+                    {/* Row 1: Issue Qty, renting rate, estimated cost */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
+                        <input 
+                          type="number" 
+                        onWheel={(e) => e.target.blur()} 
+                          value={issueForm.issueData} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
+                          required 
+                          placeholder="0"
+                          className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${Number(issueForm.issueData) > Number(issueForm.openingBalance) ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
+                        />
+                        {Number(issueForm.issueData) > Number(issueForm.openingBalance) && (
+                          <p className="text-[10px] text-red-500 font-bold mt-1 animate-pulse px-1 flex items-center gap-1">
+                            <X className="h-2 w-2" /> Cannot exceed opening balance ({issueForm.openingBalance})
+                          </p>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (₹) *</label>
+                        <input 
+                          type="number" 
+                        onWheel={(e) => e.target.blur()} 
+                          step="0.01" 
+                          value={issueForm.perUnit} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} 
+                          required 
+                          placeholder="0.00"
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Estimated Cost</label>
+                        <div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">
+                          ₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Venue Name, Damage/Missing Rate, item-attachment */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Venue Name</label>
+                        <input 
+                          type="text" 
+                          value={issueForm.foodName} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} 
+                          placeholder="Enter venue..."
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Damage/Missing Rate (₹) *</label>
+                        <input 
+                          type="number" 
+                        onWheel={(e) => e.target.blur()} 
+                          step="0.01" 
+                          value={issueForm.unit} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} 
+                          required 
+                          placeholder="0.00"
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item-Attachment</label>
+                        <div className="h-11">
+                          <input type="file" id="inventory-upload" onChange={handleImageChange} className="hidden" accept="image/*" />
+                          <label htmlFor="inventory-upload" className="flex items-center justify-between px-3 h-full rounded-lg border border-slate-200 hover:border-violet-400 bg-white cursor-pointer transition-all">
+                            <div className="flex items-center gap-3 truncate">
+                              <UploadCloud className="h-4 w-4 text-slate-300" />
+                              <span className="text-xs font-semibold text-slate-500">{selectedImage ? "New File" : "Upload"}</span>
+                            </div>
+                            <div className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-400 uppercase tracking-tighter shrink-0">Browse</div>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Row 3: Image Preview, Remarks */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Preview</label>
+                        <div className="p-2 bg-white border border-slate-100 rounded-xl shadow-sm h-28 flex items-center justify-center">
+                          {imagePreview ? (
+                            <div className="relative group rounded-lg overflow-hidden bg-slate-50 h-full w-full">
+                              <img src={imagePreview} alt="Preview" className="w-full h-full object-contain" />
+                              <button type="button" onClick={() => { setImagePreview(null); setSelectedImage(null); }} className="absolute top-1 right-1 p-1 bg-black/50 text-white rounded-lg transition-all opacity-0 group-hover:opacity-100"><X className="h-3 w-3" /></button>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center gap-1 opacity-20">
+                              <UploadCloud className="h-6 w-6" />
+                              <span className="text-[10px] font-bold uppercase tracking-widest">No Image</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Remarks</label>
+                        <textarea 
+                          value={issueForm.remarks} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, remarks: e.target.value }))} 
+                          placeholder="Add any internal remarks..." 
+                          className="w-full px-4 py-3 rounded-lg border border-slate-200 h-28 resize-none shadow-sm focus:border-violet-500 outline-none text-sm font-medium" 
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isReturnModalOpen && (
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1"><label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Date *</label><input type="date" value={returnForm.returnDate} onChange={(e) => setReturnForm(p => ({ ...p, returnDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-medium" /></div>
@@ -1026,8 +1167,8 @@ const Inventory = () => {
                     
                     {/* Row 1: Damage, Missing, Damage Rate */}
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage *</label><input type="number" value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
-                      <div className="space-y-1"><label className="text-xs font-bold text-orange-500 uppercase tracking-wide">Missing *</label><input type="number" value={returnForm.missingItems} onChange={(e) => setReturnForm(p => ({ ...p, missingItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-orange-100 focus:border-orange-500 text-sm font-medium text-orange-700 bg-orange-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage *</label><input type="number" onWheel={(e) => e.target.blur()} value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-orange-500 uppercase tracking-wide">Missing *</label><input type="number" onWheel={(e) => e.target.blur()} value={returnForm.missingItems} onChange={(e) => setReturnForm(p => ({ ...p, missingItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-orange-100 focus:border-orange-500 text-sm font-medium text-orange-700 bg-orange-50/20" /></div>
                       <div className="space-y-1"><label className="text-xs font-bold text-slate-400 uppercase tracking-wide">Damage Rate (₹)</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.damageRate || '0'}</div></div>
                     </div>
 
@@ -1037,44 +1178,18 @@ const Inventory = () => {
                       <div className="space-y-1"><label className="text-xs font-bold text-slate-400 uppercase tracking-wide">Renting Rate (₹)</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.rentingRate || '0'}</div></div>
                       <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Total Cost (₹)</label><div className="h-11 flex items-center bg-emerald-50 px-4 rounded-lg border border-emerald-200 text-sm font-black text-emerald-700 shadow-inner-sm">₹{returnForm.totalCost || '0.00'}</div></div>
                     </div>
-                  </>
-                ) : (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
-                      <input 
-                        type="number" 
-                        value={issueForm.issueData} 
-                        onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
-                        required 
-                        className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${Number(issueForm.issueData) > Number(issueForm.openingBalance) ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
-                      />
-                      {Number(issueForm.issueData) > Number(issueForm.openingBalance) && (
-                        <p className="text-[10px] text-red-500 font-bold mt-1 animate-pulse px-1 flex items-center gap-1">
-                          <X className="h-2 w-2" /> Cannot exceed opening balance ({issueForm.openingBalance})
-                        </p>
-                      )}
+
+                    {/* Shared Image/Remarks for Return */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Image Attachment</label>
+                        <div className="h-11"><input type="file" id="return-upload" onChange={handleImageChange} className="hidden" accept="image/*" /><label htmlFor="return-upload" className="flex items-center justify-between px-3 h-full rounded-lg border border-slate-200 hover:border-fuchsia-400 bg-white cursor-pointer"><div className="flex items-center gap-3 truncate"><UploadCloud className="h-4 w-4 text-slate-300" /><span>{selectedImage ? "New File" : "Upload Image"}</span></div><div className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-400 uppercase tracking-tighter shrink-0">Browse</div></label></div>
+                        {imagePreview && <div className="mt-2 p-2 bg-white border border-slate-100 rounded-xl shadow-sm"><div className="relative group rounded-lg overflow-hidden bg-slate-50 h-48"><img src={imagePreview} alt="Preview" className="w-full h-full object-contain" /><button type="button" onClick={() => { setImagePreview(null); setSelectedImage(null); }} className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-lg transition-all"><X className="h-3.5 w-3.5" /></button></div></div>}
+                      </div>
+                      <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Remarks</label><textarea value={returnForm.remarks} onChange={(e) => setReturnForm(p => ({ ...p, remarks: e.target.value }))} placeholder="..." rows="3" className="w-full px-4 py-2 rounded-lg border border-slate-200 h-28 resize-none shadow-sm focus:border-fuchsia-500 outline-none" /></div>
                     </div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Venue Name</label><input type="text" value={issueForm.foodName} onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
-                  </div>
+                  </>
                 )}
-
-                {isIssueModalOpen && (
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (in ₹) *</label><input type="number" step="0.01" value={issueForm.perUnit} onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Damage/Missing Rate (in ₹) *</label><input type="number" step="0.01" value={issueForm.unit} onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 text-sm font-medium" /></div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Estimated Cost</label><div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}</div></div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Image Attachment</label>
-                    <div className="h-11"><input type="file" id="inventory-upload" onChange={handleImageChange} className="hidden" accept="image/*" /><label htmlFor="inventory-upload" className="flex items-center justify-between px-3 h-full rounded-lg border border-slate-200 hover:border-violet-400 bg-white cursor-pointer"><div className="flex items-center gap-3 truncate"><UploadCloud className="h-4 w-4 text-slate-300" /><span>{selectedImage ? "New File" : "Upload Image"}</span></div><div className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-400 uppercase tracking-tighter shrink-0">Browse</div></label></div>
-                    {imagePreview && <div className="mt-2 p-2 bg-white border border-slate-100 rounded-xl shadow-sm"><div className="relative group rounded-lg overflow-hidden bg-slate-50 h-48"><img src={imagePreview} alt="Preview" className="w-full h-full object-contain" /><button type="button" onClick={() => { setImagePreview(null); setSelectedImage(null); }} className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-lg transition-all"><X className="h-3.5 w-3.5" /></button></div></div>}
-                  </div>
-                  <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Remarks</label><textarea value={isIssueModalOpen ? issueForm.remarks : returnForm.remarks} onChange={(e) => isIssueModalOpen ? setIssueForm(p => ({ ...p, remarks: e.target.value })) : setReturnForm(p => ({ ...p, remarks: e.target.value }))} placeholder="..." rows="3" className="w-full px-4 py-2 rounded-lg border border-slate-200 h-28 resize-none shadow-sm" /></div>
-                </div>
 
                 <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
                   <button type="button" onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>

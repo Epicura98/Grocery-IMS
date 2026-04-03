@@ -109,7 +109,8 @@ export default function Stock() {
     openingBalance: '',
     perUnit: '',
     unit: '',
-    remarks: ''
+    remarks: '',
+    rentalPrice: ''
   });
 
   const [purchaseForm, setPurchaseForm] = useState({
@@ -122,7 +123,8 @@ export default function Stock() {
     unit: '',
     remarks: '',
     inventoryNo: '',
-    imageUrl: ''
+    imageUrl: '',
+    rentalPrice: ''
   });
 
   const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
@@ -180,8 +182,8 @@ export default function Stock() {
           const rows = dropdownRes.data.slice(1);
           setMasterData(rows);
           setDropdownOptions({
-            inventoryTypeOptions: [...new Set(rows.map(row => row[0]).filter(Boolean))],
-            departmentOptions: [...new Set(rows.map(row => row[1]).filter(Boolean))],
+            inventoryTypeOptions: [...new Set(rows.map(row => row[3]).filter(Boolean))],
+            departmentOptions: [...new Set(rows.map(row => row[2]).filter(Boolean))],
             unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))]
           });
         }
@@ -267,10 +269,16 @@ export default function Stock() {
     }, 0);
   }, [filteredStockRows]);
 
+  const isDuplicateItem = useMemo(() => {
+    if (!form.itemsName.trim()) return false;
+    return stockRows.some(row => (row[5] || '').toLowerCase() === form.itemsName.trim().toLowerCase());
+  }, [form.itemsName, stockRows]);
+
   useEffect(() => {
     if (form.inventoryType && masterData.length > 0) {
+      // Matching Type from Col A (index 0) based on selection fetched from Col D (index 3)
       const matchingRows = masterData.filter(row => row[0] === form.inventoryType);
-      const uniqueDepts = [...new Set(matchingRows.map(row => row[1]).filter(Boolean))];
+      const uniqueDepts = [...new Set(matchingRows.map(row => row[2]).filter(Boolean))];
       setFilteredDepartments(uniqueDepts);
     } else {
       setFilteredDepartments(dropdownOptions.departmentOptions);
@@ -279,10 +287,11 @@ export default function Stock() {
 
   useEffect(() => {
     if (form.inventoryType && form.department && masterData.length > 0) {
+      // Matching Type from Col A (index 0) and Dept from Col C (index 2)
       const matchingRows = masterData.filter(row =>
-        row[0] === form.inventoryType && row[1] === form.department
+        row[0] === form.inventoryType && row[2] === form.department
       );
-      const uniqueItems = [...new Set(matchingRows.map(row => row[2]).filter(Boolean))];
+      const uniqueItems = [...new Set(matchingRows.map(row => row[1]).filter(Boolean))];
       setFilteredItems(uniqueItems);
     } else {
       setFilteredItems([]);
@@ -333,13 +342,44 @@ export default function Stock() {
     return result.fileUrl;
   };
 
+  // Synchronous price lookup for smoother UI
+  useEffect(() => {
+    if (form.itemsName && masterData.length > 0) {
+      const match = masterData.find(row => 
+        String(row[1] || '').trim().toLowerCase() === String(form.itemsName).trim().toLowerCase()
+      );
+      if (match) {
+        setForm(prev => ({ 
+          ...prev, 
+          rentalPrice: match[5] || prev.rentalPrice,
+          perUnit: match[6] || prev.perUnit 
+        }));
+      }
+    }
+  }, [form.itemsName, masterData]);
+
+  useEffect(() => {
+    if (purchaseForm.itemsName && masterData.length > 0) {
+      const match = masterData.find(row => 
+        String(row[1] || '').trim().toLowerCase() === String(purchaseForm.itemsName).trim().toLowerCase()
+      );
+      if (match) {
+        setPurchaseForm(prev => ({ 
+          ...prev, 
+          rentalPrice: match[5] || prev.rentalPrice,
+          perUnit: match[6] || prev.perUnit 
+        }));
+      }
+    }
+  }, [purchaseForm.itemsName, masterData]);
+
   const handleAddItem = async (customValue) => {
     const valueToAdd = customValue?.trim();
     if (!valueToAdd || !form.department || !form.inventoryType) return;
 
     setIsAddingItem(true);
     try {
-      const rowData = [form.inventoryType, form.department, valueToAdd, "", form.unit];
+      const rowData = [form.inventoryType, valueToAdd, form.department, "", form.unit, form.rentalPrice || "0", form.perUnit || "0"];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -362,6 +402,30 @@ export default function Stock() {
       showToast('Failed to add item', 'error');
     } finally {
       setIsAddingItem(false);
+    }
+  };
+
+  const updateMasterPrice = async (itemName, damagePrice, rentalPrice) => {
+    try {
+      const masterRow = masterData.find(row => row[1] === itemName);
+      if (!masterRow) return;
+
+      const updatedRow = [...masterRow];
+      updatedRow[5] = rentalPrice || masterRow[5] || "0";
+      updatedRow[6] = damagePrice || masterRow[6] || "0";
+
+      await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          action: 'update',
+          sheetName: 'Master-Dropdown',
+          spreadsheetId: spreadsheetId,
+          rowData: JSON.stringify(updatedRow)
+        })
+      });
+    } catch (err) {
+      console.error('Master price sync failed:', err);
     }
   };
 
@@ -407,6 +471,9 @@ export default function Stock() {
       const saveResult = await saveRes.json();
       if (!saveResult.success) throw new Error(saveResult.error);
 
+      // Sync prices to Master-Dropdown
+      await updateMasterPrice(form.itemsName, form.perUnit, form.rentalPrice);
+
       showToast('Stock registered successfully');
       setForm({ inventoryType: '', department: '', itemsName: '', vendorName: '', openingBalance: '', perUnit: '', unit: '', remarks: '' });
       setImagePreview(null);
@@ -450,6 +517,9 @@ export default function Stock() {
       const saveResult = await saveRes.json();
       if (!saveResult.success) throw new Error(saveResult.error);
 
+      // Sync prices to Master-Dropdown
+      await updateMasterPrice(purchaseForm.itemsName, purchaseForm.perUnit, purchaseForm.rentalPrice);
+
       showToast('Re-Purchase recorded successfully');
       setPurchaseForm({ inventoryType: '', department: '', itemsName: '', vendorName: '', openingBalance: '', perUnit: '', unit: '', remarks: '', inventoryNo: '', imageUrl: '' });
       setImagePreview(null);
@@ -488,7 +558,7 @@ export default function Stock() {
 
           <div className="flex items-center gap-4">
             <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
-              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">Overall Sum:</span>
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">Total Expense:</span>
               <span className="text-sm font-bold text-white">₹{totalStockCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <button
@@ -766,26 +836,27 @@ export default function Stock() {
               </div>
 
               <form onSubmit={handlePurchaseSubmit} className="px-7 py-5 space-y-5 max-h-[72vh] overflow-y-auto pb-12 custom-scrollbar">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type</label>
-                  <div className="relative">
-                    <select
-                      value={purchaseForm.inventoryType}
-                      onChange={(e) => {
-                        setPurchaseForm({ ...purchaseForm, inventoryType: e.target.value, itemsName: '', inventoryNo: '' });
-                        if (e.target.value) setShowPurchaseItemDropdown(true);
-                      }}
-                      required
-                      className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 appearance-none bg-white font-sans"
-                    >
-                      <option value="">Select type...</option>
-                      {dropdownOptions.inventoryTypeOptions.map(opt => (
-                        <option key={opt} value={opt}>{opt}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type</label>
+                    <div className="relative">
+                      <select
+                        value={purchaseForm.inventoryType}
+                        onChange={(e) => {
+                          setPurchaseForm({ ...purchaseForm, inventoryType: e.target.value, itemsName: '', inventoryNo: '' });
+                          if (e.target.value) setShowPurchaseItemDropdown(true);
+                        }}
+                        required
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 appearance-none bg-white font-sans"
+                      >
+                        <option value="">Select type...</option>
+                        {[...new Set(stockRows.map(row => row[3]).filter(Boolean))].sort().map(opt => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+                    </div>
                   </div>
-                </div>
 
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name</label>
@@ -823,17 +894,19 @@ export default function Stock() {
                               type="button"
                               onMouseDown={(e) => {
                                 e.preventDefault();
+                                const masterRow = masterData.find(row => row[1] === item[5]);
                                 setPurchaseForm({
                                   ...purchaseForm,
                                   inventoryNo: item[2],
                                   department: item[4],
                                   itemsName: item[5],
                                   unit: item[8],
-                                  perUnit: item[9],
+                                  perUnit: masterRow ? masterRow[6] : item[9],
                                   vendorName: item[6],
                                   imageUrl: item[10],
                                   openingBalance: '',
-                                  remarks: ''
+                                  remarks: '',
+                                  rentalPrice: masterRow ? masterRow[5] : ''
                                 });
                                 setImagePreview(getDisplayableImageUrl(item[10]));
                                 setShowPurchaseItemDropdown(false);
@@ -858,6 +931,7 @@ export default function Stock() {
                     )}
                   </div>
                 </div>
+              </div>
 
                 <div className="space-y-5 animate-in slide-in-from-top-4 duration-500">
                   {purchaseForm.inventoryNo && (
@@ -883,7 +957,7 @@ export default function Stock() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-4 gap-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Vendor Name</label>
                       <input
@@ -896,9 +970,23 @@ export default function Stock() {
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Per Unit Price</label>
+                      <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Opening Bal</label>
                       <input
                         type="number"
+                        onWheel={(e) => e.target.blur()} 
+                        value={purchaseForm.openingBalance}
+                        onChange={(e) => setPurchaseForm(prev => ({ ...prev, openingBalance: e.target.value }))}
+                        required
+                        placeholder="Qty..."
+                        className="w-full h-11 px-4 rounded-lg border border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-slate-700"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Per Unit Price (₹)</label>
+                      <input
+                        type="number"
+                        onWheel={(e) => e.target.blur()} 
+                        step="0.01"
                         value={purchaseForm.perUnit}
                         onChange={(e) => setPurchaseForm(prev => ({ ...prev, perUnit: e.target.value }))}
                         required
@@ -915,14 +1003,16 @@ export default function Stock() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Opening Balance</label>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Rental Price (₹)</label>
                       <input
                         type="number"
-                        value={purchaseForm.openingBalance}
-                        onChange={(e) => setPurchaseForm(prev => ({ ...prev, openingBalance: e.target.value }))}
+                        onWheel={(e) => e.target.blur()} 
+                        step="0.01"
+                        value={purchaseForm.rentalPrice}
+                        onChange={(e) => setPurchaseForm(prev => ({ ...prev, rentalPrice: e.target.value }))}
                         required
-                        placeholder="Enter quantity..."
-                        className="w-full h-11 px-4 rounded-lg border border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-slate-700"
+                        placeholder="Enter rental price..."
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans"
                       />
                     </div>
                     <div className="space-y-1">
@@ -1024,11 +1114,28 @@ export default function Stock() {
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name</label>
                     <div className="relative">
-                      <input type="text" placeholder={form.department ? "Type item name..." : "Select department first"} value={form.itemsName} onChange={(e) => { setForm(prev => ({ ...prev, itemsName: e.target.value })); setShowItemDropdown(true); }} onFocus={() => setShowItemDropdown(true)} onBlur={() => setTimeout(() => setShowItemDropdown(false), 200)} disabled={!form.department} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 disabled:bg-slate-50" />
+                      <input type="text" placeholder={form.department ? "Type item name..." : "Select department first"} value={form.itemsName} onChange={(e) => { setForm(prev => ({ ...prev, itemsName: e.target.value })); setShowItemDropdown(true); }} onFocus={() => setShowItemDropdown(true)} onBlur={() => setTimeout(() => setShowItemDropdown(false), 200)} disabled={!form.department} required className={`w-full h-11 px-4 rounded-lg border ${isDuplicateItem ? 'border-red-300 bg-red-50/30' : 'border-slate-200'} focus:border-violet-500 outline-none text-sm font-medium text-slate-700 disabled:bg-slate-50 transition-colors`} />
+                      {isDuplicateItem && (
+                        <div className="mt-1.5 flex items-center gap-1.5 px-1 animate-in fade-in slide-in-from-top-1 duration-300">
+                          <XCircle className="h-3 w-3 text-red-500" />
+                          <p className="text-[10px] font-bold text-red-600 uppercase tracking-tight">Item already in stock. Use Re-purchase form instead.</p>
+                        </div>
+                      )}
                       {showItemDropdown && (
                         <div className="absolute z-50 w-full mt-1.5 bg-white border border-slate-100 rounded-xl shadow-xl max-h-48 overflow-y-auto p-1.5 ring-1 ring-slate-900/5">
                           {filteredItems.filter(i => i.toLowerCase().includes(form.itemsName.toLowerCase())).map(item => (
-                            <button key={item} type="button" onMouseDown={() => { setForm(prev => ({ ...prev, itemsName: item })); setShowItemDropdown(false); }} className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 rounded-lg">{item}</button>
+                            <button key={item} type="button" onMouseDown={() => { 
+                              const masterRow = masterData.find(row => 
+                                String(row[1] || '').trim().toLowerCase() === String(item).trim().toLowerCase()
+                              );
+                              setForm(prev => ({ 
+                                ...prev, 
+                                itemsName: item,
+                                rentalPrice: masterRow ? masterRow[5] : prev.rentalPrice,
+                                perUnit: masterRow ? masterRow[6] : prev.perUnit
+                              })); 
+                              setShowItemDropdown(false); 
+                            }} className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 rounded-lg">{item}</button>
                           ))}
                           {form.itemsName && !filteredItems.includes(form.itemsName) && (
                             <button type="button" onMouseDown={() => handleAddItem(form.itemsName)} disabled={isAddingItem} className="w-full mt-1.5 p-3 bg-slate-900 text-white rounded-lg flex items-center justify-between text-xs font-bold font-sans"><span>Register "{form.itemsName}"</span><PlusCircle className="h-3.5 w-3.5" /></button>
@@ -1054,18 +1161,25 @@ export default function Stock() {
                     </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Opening Balance</label>
-                    <input type="number" name="openingBalance" value={form.openingBalance} onChange={handleChange} required placeholder="e.g. 100" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans" />
+                    <input type="number" onWheel={(e) => e.target.blur()} name="openingBalance" value={form.openingBalance} onChange={handleChange} required placeholder="e.g. 100" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans" />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Price Per Unit</label>
-                    <input type="number" name="perUnit" value={form.perUnit} onChange={handleChange} required placeholder="e.g. 25" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans" />
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Per Unit Price (₹)</label>
+                    <input type="number" step="0.01" onWheel={(e) => e.target.blur()} name="perUnit" value={form.perUnit} onChange={handleChange} required placeholder="e.g. 25" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans" />
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Total Cost</label>
                     <div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700">₹{(Number(form.openingBalance || 0) * Number(form.perUnit || 0)).toFixed(2)}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Rental Price (₹)</label>
+                    <input type="number" step="0.01" onWheel={(e) => e.target.blur()} name="rentalPrice" value={form.rentalPrice} onChange={handleChange} required placeholder="Enter rental price" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans" />
                   </div>
                 </div>
                 <div className="space-y-1">
