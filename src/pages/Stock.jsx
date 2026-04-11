@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import AdminLayout from "../components/layout/AdminLayout";
 import { formatDate, compressImage, parseRowDate } from "../utils/helpers";
+import { fetchSheetDataInBackground } from "../utils/api";
 
 export default function Stock() {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -45,10 +46,12 @@ export default function Stock() {
   const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
   const [isColMenuOpen, setIsColMenuOpen] = useState(false);
   const [isDateMenuOpen, setIsDateMenuOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('purchase'); // 'purchase' or 'repurchase'
 
   // Data State
   const [masterData, setMasterData] = useState([]);
-  const [stockRows, setStockRows] = useState([]);
+  const [stockRows, setStockRows] = useState([]); // Standard Purchase items
+  const [rePurchaseRows, setRePurchaseRows] = useState([]); // Re-Purchase items
   const [searchTerm, setSearchTerm] = useState("");
   const [dropdownOptions, setDropdownOptions] = useState({
     inventoryTypeOptions: [],
@@ -123,8 +126,7 @@ export default function Stock() {
     unit: '',
     remarks: '',
     inventoryNo: '',
-    imageUrl: '',
-    rentalPrice: ''
+    imageUrl: ''
   });
 
   const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
@@ -153,19 +155,21 @@ export default function Stock() {
 
   const fetchStockData = async () => {
     setIsTableLoading(true);
-    try {
-      const response = await fetch(`${scriptUrl}?action=fetch&sheet=Add-Stock&sheetName=Add-Stock&spreadsheetId=${spreadsheetId}`);
-      const result = await response.json();
-      if (result.success && result.data) {
-        const validRows = result.data.slice(1).filter(row => row[5] && row[5].toString().trim() !== "");
-        setStockRows(validRows.reverse());
-      }
-    } catch (err) {
-      console.error('Fetch stock error:', err);
-      showToast('Failed to load stock data', 'error');
-    } finally {
-      setIsTableLoading(false);
-    }
+    // Fetch Add-Stock in background
+    fetchSheetDataInBackground(scriptUrl, 'Add-Stock', spreadsheetId, (data, isComplete) => {
+      const validRows = data.filter(row => row[5] && row[5].toString().trim() !== "");
+      setStockRows(validRows.reverse());
+      if (isComplete && activeTab === 'purchase') setIsTableLoading(false);
+      if (validRows.length > 0 && activeTab === 'purchase') setIsTableLoading(false);
+    });
+
+    // Fetch Re-Purchase in background
+    fetchSheetDataInBackground(scriptUrl, 'Re-Purchase', spreadsheetId, (data, isComplete) => {
+      const validRows = data.filter(row => row[5] && row[5].toString().trim() !== "");
+      setRePurchaseRows(validRows.reverse());
+      if (isComplete && activeTab === 'repurchase') setIsTableLoading(false);
+      if (validRows.length > 0 && activeTab === 'repurchase') setIsTableLoading(false);
+    });
   };
 
   useEffect(() => {
@@ -188,53 +192,54 @@ export default function Stock() {
           });
         }
 
-        if (stockRes.success && stockRes.data) {
-          const validRows = stockRes.data.slice(1).filter(row => row[5] && row[5].toString().trim() !== "");
-          setStockRows(validRows.reverse());
-        }
+        // Load histories in background
+        fetchStockData();
       } catch (err) {
         console.error("Fetch error:", err);
         showToast("Failed to load data", "error");
       } finally {
         setIsLoading(false);
-        setIsTableLoading(false);
       }
     };
     loadAllData();
   }, []);
 
+  const historyToDisplay = useMemo(() => {
+    return activeTab === 'purchase' ? stockRows : rePurchaseRows;
+  }, [activeTab, stockRows, rePurchaseRows]);
+
   const typeOptions = useMemo(() => {
-    const filtered = stockRows.filter(row => {
+    const filtered = historyToDisplay.filter(row => {
       const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
       const matchesDept = !filterDept || row[4] === filterDept;
       const matchesItem = !filterItem || row[5] === filterItem;
       return matchesSearch && matchesDept && matchesItem;
     });
     return [...new Set(filtered.map(row => row[3]).filter(Boolean))].sort();
-  }, [stockRows, searchTerm, filterDept, filterItem]);
+  }, [historyToDisplay, searchTerm, filterDept, filterItem]);
 
   const deptOptions = useMemo(() => {
-    const filtered = stockRows.filter(row => {
+    const filtered = historyToDisplay.filter(row => {
       const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
       const matchesType = !filterType || row[3] === filterType;
       const matchesItem = !filterItem || row[5] === filterItem;
       return matchesSearch && matchesType && matchesItem;
     });
     return [...new Set(filtered.map(row => row[4]).filter(Boolean))].sort();
-  }, [stockRows, searchTerm, filterType, filterItem]);
+  }, [historyToDisplay, searchTerm, filterType, filterItem]);
 
   const itemOptions = useMemo(() => {
-    const filtered = stockRows.filter(row => {
+    const filtered = historyToDisplay.filter(row => {
       const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
       const matchesType = !filterType || row[3] === filterType;
       const matchesDept = !filterDept || row[4] === filterDept;
       return matchesSearch && matchesType && matchesDept;
     });
     return [...new Set(filtered.map(row => row[5]).filter(Boolean))].sort();
-  }, [stockRows, searchTerm, filterType, filterDept]);
+  }, [historyToDisplay, searchTerm, filterType, filterDept]);
 
   const filteredStockRows = useMemo(() => {
-    return stockRows.filter(row => {
+    return historyToDisplay.filter(row => {
       const matchesSearch = !searchTerm.trim() || 
         row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
         
@@ -260,7 +265,7 @@ export default function Stock() {
       
       return matchesSearch && matchesType && matchesDept && matchesItem && matchesDate;
     });
-  }, [stockRows, searchTerm, filterType, filterDept, filterItem, startDate, endDate]);
+  }, [historyToDisplay, searchTerm, filterType, filterDept, filterItem, startDate, endDate]);
 
   const totalStockCost = useMemo(() => {
     return filteredStockRows.reduce((sum, row) => {
@@ -366,7 +371,6 @@ export default function Stock() {
       if (match) {
         setPurchaseForm(prev => ({ 
           ...prev, 
-          rentalPrice: match[5] || prev.rentalPrice,
           perUnit: match[6] || prev.perUnit 
         }));
       }
@@ -518,7 +522,7 @@ export default function Stock() {
       if (!saveResult.success) throw new Error(saveResult.error);
 
       // Sync prices to Master-Dropdown
-      await updateMasterPrice(purchaseForm.itemsName, purchaseForm.perUnit, purchaseForm.rentalPrice);
+      await updateMasterPrice(purchaseForm.itemsName, purchaseForm.perUnit);
 
       showToast('Re-Purchase recorded successfully');
       setPurchaseForm({ inventoryType: '', department: '', itemsName: '', vendorName: '', openingBalance: '', perUnit: '', unit: '', remarks: '', inventoryNo: '', imageUrl: '' });
@@ -558,7 +562,7 @@ export default function Stock() {
 
           <div className="flex items-center gap-4">
             <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
-              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">Total Expense:</span>
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">{activeTab === 'purchase' ? 'Purchase Total:' : 'Re-Purchase Total:'}</span>
               <span className="text-sm font-bold text-white">₹{totalStockCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <button
@@ -582,7 +586,20 @@ export default function Stock() {
         <div className="mx-6 mb-6 bg-white rounded-xl shadow-sm border border-slate-100 flex flex-col flex-1 min-h-0 overflow-visible relative">
 
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100/50 rounded-t-xl">
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Stock History</h2>
+            <div className="flex gap-1.5 bg-slate-100/80 p-1.5 rounded-2xl shadow-inner-sm">
+              <button 
+                onClick={() => setActiveTab('purchase')} 
+                className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'purchase' ? 'bg-white text-violet-600 shadow-xl shadow-violet-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}
+              >
+                Purchase History
+              </button>
+              <button 
+                onClick={() => setActiveTab('repurchase')} 
+                className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 ${activeTab === 'repurchase' ? 'bg-white text-violet-600 shadow-xl shadow-violet-100/50 scale-[1.02]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}
+              >
+                Re-Purchase History
+              </button>
+            </div>
 
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-3">
@@ -905,8 +922,7 @@ export default function Stock() {
                                   vendorName: item[6],
                                   imageUrl: item[10],
                                   openingBalance: '',
-                                  remarks: '',
-                                  rentalPrice: masterRow ? masterRow[5] : ''
+                                  remarks: ''
                                 });
                                 setImagePreview(getDisplayableImageUrl(item[10]));
                                 setShowPurchaseItemDropdown(false);
@@ -1002,19 +1018,6 @@ export default function Stock() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Rental Price (₹)</label>
-                      <input
-                        type="number"
-                        onWheel={(e) => e.target.blur()} 
-                        step="0.01"
-                        value={purchaseForm.rentalPrice}
-                        onChange={(e) => setPurchaseForm(prev => ({ ...prev, rentalPrice: e.target.value }))}
-                        required
-                        placeholder="Enter rental price..."
-                        className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 font-sans"
-                      />
-                    </div>
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item-Image</label>
                       <div className="h-11">

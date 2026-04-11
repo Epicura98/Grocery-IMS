@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search,
   ArrowUpRight,
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import AdminLayout from '../components/layout/AdminLayout';
 import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber } from '../utils/helpers';
+import { fetchSheetDataInBackground } from '../utils/api';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -41,8 +42,11 @@ const Inventory = () => {
   const [dropdownOptions, setDropdownOptions] = useState({
     inventoryTypeOptions: [],
     departmentOptions: [],
-    unitOptions: []
+    unitOptions: [],
+    issuerOptions: []
   });
+  const [showIssuerDropdown, setShowIssuerDropdown] = useState(false);
+  const issuerDropdownRef = useRef(null);
   const [masterData, setMasterData] = useState([]);
   const [stockRows, setStockRows] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
@@ -74,7 +78,7 @@ const Inventory = () => {
 
   // Form States
   const [issueForm, setIssueForm] = useState({
-    forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
+    forType: 'Rent', issuer: '', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
   });
 
   const [returnForm, setReturnForm] = useState({
@@ -134,6 +138,16 @@ const Inventory = () => {
     { key: 'totalCost', label: 'Total Cost', index: 20 },
     { key: 'image', label: 'Image', index: 18 }
   ];
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (issuerDropdownRef.current && !issuerDropdownRef.current.contains(event.target)) {
+        setShowIssuerDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleImageChange = (e) => {
     const file = e.target.files[0];
@@ -200,7 +214,8 @@ const Inventory = () => {
         setDropdownOptions({
           inventoryTypeOptions: [...new Set(rows.map(row => row[3]).filter(Boolean))],
           departmentOptions: [...new Set(rows.map(row => row[2]).filter(Boolean))],
-          unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))]
+          unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))],
+          issuerOptions: [...new Set(rows.map(row => row[7]).filter(Boolean))].sort()
         });
       }
       // Fetch Add-Stock to get stock-only options for Issue form
@@ -247,20 +262,21 @@ const Inventory = () => {
 
   const fetchHistory = async () => {
     setIsTableLoading(true);
-    try {
-      const [issuedRes, returnRes] = await Promise.all([
-        fetch(`${scriptUrl}?action=fetch&sheet=Issued&sheetName=Issued&spreadsheetId=${spreadsheetId}`).then(r => r.json()),
-        fetch(`${scriptUrl}?action=fetch&sheet=Return&sheetName=Return&spreadsheetId=${spreadsheetId}`).then(r => r.json())
-      ]);
-      if (issuedRes.success && issuedRes.data) {
-        const validRows = issuedRes.data.slice(1).filter(row => row[2] && row[2].toString().trim() !== "");
-        setIssueHistory(validRows.reverse());
-      }
-      if (returnRes.success && returnRes.data) {
-        const validRows = returnRes.data.slice(1).filter(row => row[1] && row[1].toString().trim() !== "");
-        setReturnHistory(validRows.reverse());
-      }
-    } catch (err) { console.error('History fetch error:', err); } finally { setIsTableLoading(false); }
+    // Fetch Issued History in background
+    fetchSheetDataInBackground(scriptUrl, 'Issued', spreadsheetId, (data, isComplete) => {
+      const validRows = data.filter(row => row[2] && row[2].toString().trim() !== "");
+      setIssueHistory(validRows.reverse());
+      if (isComplete && activeTab === 'issued') setIsTableLoading(false);
+      if (validRows.length > 0 && activeTab === 'issued') setIsTableLoading(false);
+    });
+
+    // Fetch Return History in background
+    fetchSheetDataInBackground(scriptUrl, 'Return', spreadsheetId, (data, isComplete) => {
+      const validRows = data.filter(row => row[1] && row[1].toString().trim() !== "");
+      setReturnHistory(validRows.reverse());
+      if (isComplete && activeTab === 'return') setIsTableLoading(false);
+      if (validRows.length > 0 && activeTab === 'return') setIsTableLoading(false);
+    });
   };
 
   useEffect(() => { fetchInitialData(); fetchHistory(); }, []);
@@ -354,6 +370,67 @@ const Inventory = () => {
     }, 0);
   }, [activeTab, filteredIssuedHistory, filteredReturnHistory]);
 
+  const validationState = useMemo(() => {
+    if (!issueForm.itemsName || !issueForm.eventDate) return { remaining: 0, isOver: false, committed: 0 };
+    
+    const selectedItem = issueForm.itemsName.trim().toLowerCase();
+    const selectedDate = issueForm.eventDate;
+    const masterStock = Number(issueForm.openingBalance) || 0;
+    const currentQty = Number(issueForm.issueData) || 0;
+    const currentParty = String(issueForm.partyName || '').trim().toLowerCase();
+    const currentVenue = String(issueForm.foodName || '').trim().toLowerCase();
+    const currentSlot = String(issueForm.eventTime || 'Regular').trim().toLowerCase();
+    const currentKey = `${currentParty}|${currentVenue}`;
+
+    // 1. Group existing issues by (Party | Venue) AND (Slot)
+    const partyVenueMap = {}; 
+    issueHistory.forEach(row => {
+      const rowItem = String(row[5] || '').trim().toLowerCase();
+      const rowDate = toInputDate(row[7]);
+      
+      if (rowItem === selectedItem && rowDate === selectedDate) {
+        const p = String(row[6] || '').trim().toLowerCase();
+        const v = String(row[14] || '').trim().toLowerCase();
+        const s = String(row[17] || 'Regular').trim().toLowerCase();
+        const q = Number(row[8] || 0);
+        
+        const key = `${p}|${v}`;
+        if (!partyVenueMap[key]) partyVenueMap[key] = {};
+        partyVenueMap[key][s] = (partyVenueMap[key][s] || 0) + q;
+      }
+    });
+
+    // 2. Calculate Commitment per Party/Venue peak
+    const groupPeaks = {};
+    Object.entries(partyVenueMap).forEach(([key, slots]) => {
+      groupPeaks[key] = Math.max(...Object.values(slots), 0);
+    });
+
+    // 3. For the CURRENT form
+    let committedByOthers = 0;
+    Object.keys(groupPeaks).forEach(key => {
+      if (key !== currentKey) committedByOthers += groupPeaks[key];
+    });
+
+    const slotsInCurrent = partyVenueMap[currentKey] || {};
+    const sumInCurrentSlot = (slotsInCurrent[currentSlot] || 0) + currentQty;
+    const otherSlotsInCurrent = Object.entries(slotsInCurrent)
+      .filter(([s]) => s !== currentSlot)
+      .map(([_, q]) => q);
+    
+    const currentGroupPotentialPeak = Math.max(sumInCurrentSlot, ...otherSlotsInCurrent, 0);
+    const totalPotential = committedByOthers + currentGroupPotentialPeak;
+    const isOver = totalPotential > masterStock;
+    const totalCommittedRightNow = Object.values(groupPeaks).reduce((a, b) => a + b, 0);
+
+    return { 
+      remaining: Math.max(0, masterStock - totalCommittedRightNow), 
+      isOver, 
+      committed: totalCommittedRightNow,
+      availableForThisGroup: masterStock - committedByOthers 
+    };
+  }, [issueHistory, issueForm.itemsName, issueForm.eventDate, issueForm.partyName, issueForm.foodName, issueForm.eventTime, issueForm.issueData, issueForm.openingBalance]);
+
   // Auto-calculate Return Qty and Total Cost
   useEffect(() => {
     if (!isReturnModalOpen) return;
@@ -376,13 +453,19 @@ const Inventory = () => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
     try {
+      if (validationState.isOver) {
+        showToast(`Error: Exceeds available stock for this date (Limit: ${validationState.availableForThisGroup})`, 'error');
+        setIsSubmitting(false);
+        return;
+      }
+      
       const imageUrl = selectedImage ? await uploadToDrive(selectedImage) : (issueForm.imageUrl || 'No Image');
       const now = new Date();
       const localTimestamp = now.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(',', '');
       const opening = parseFloat(issueForm.openingBalance) || 0;
       const consumed = parseFloat(issueForm.issueData) || 0;
       const closing = opening - consumed;
-      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent'];
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent', issueForm.issuer || ''];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -866,14 +949,77 @@ const Inventory = () => {
 
               <form onSubmit={isIssueModalOpen ? handleIssueSubmit : handleReturnSubmit} className="px-7 py-5 space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar font-sans">
                 {isIssueModalOpen && (
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-4 gap-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">For *</label>
-                      <select value={issueForm.forType} onChange={(e) => setIssueForm(p => ({ ...p, forType: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-violet-700 bg-violet-50/20 transition-all">
+                      <select 
+                        value={issueForm.forType} 
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setIssueForm(p => ({ 
+                            ...p, 
+                            forType: val,
+                            perUnit: val === 'H3' ? '0' : p.perUnit,
+                            unit: val === 'H3' ? '0' : p.unit
+                          }));
+                        }} 
+                        required 
+                        className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-violet-700 bg-violet-50/20 transition-all"
+                      >
                         <option value="Rent">Rent</option>
                         <option value="H3">H3</option>
                       </select>
                     </div>
+
+                    <div className="space-y-1 relative" ref={issuerDropdownRef}>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issuer *</label>
+                      <div className="relative">
+                        <input 
+                          type="text" 
+                          value={issueForm.issuer} 
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setIssueForm(p => ({ ...p, issuer: val }));
+                            setShowIssuerDropdown(true);
+                          }}
+                          onFocus={() => setShowIssuerDropdown(true)}
+                          required 
+                          placeholder="Type or select..." 
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white"
+                        />
+                        <button 
+                          type="button"
+                          onClick={() => setShowIssuerDropdown(!showIssuerDropdown)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors"
+                        >
+                          <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showIssuerDropdown ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+                      
+                      {showIssuerDropdown && (
+                        <div className="absolute z-[160] w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-200">
+                          {(dropdownOptions.issuerOptions || [])
+                            .filter(opt => !issueForm.issuer || opt.toLowerCase().includes(issueForm.issuer.toLowerCase()))
+                            .map((opt, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => {
+                                  setIssueForm(p => ({ ...p, issuer: opt }));
+                                  setShowIssuerDropdown(false);
+                                }}
+                                className="w-full px-4 py-2.5 text-left text-sm font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-600 transition-colors border-b border-slate-50 last:border-0"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          {dropdownOptions.issuerOptions.filter(opt => !issueForm.issuer || opt.toLowerCase().includes(issueForm.issuer.toLowerCase())).length === 0 && (
+                            <div className="px-4 py-3 text-xs font-bold text-slate-400 italic text-center">No matching issuers</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type *</label>
                       <select value={issueForm.inventoryType} onChange={(e) => setIssueForm(p => ({ ...p, inventoryType: e.target.value, itemsName: '' }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white">
@@ -895,8 +1041,8 @@ const Inventory = () => {
                             department: item.department, 
                             inventoryNo: item.inventoryNo, 
                             openingBalance: item.openingBalance, 
-                            perUnit: masterRow ? masterRow[5] : item.perUnit, 
-                            unit: masterRow ? masterRow[6] : item.unit, 
+                            perUnit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[5] : item.perUnit), 
+                            unit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[6] : item.unit), 
                             imageUrl: item.imageUrl 
                           }));
                           if (item.imageUrl) setImagePreview(getDisplayableImageUrl(item.imageUrl));
@@ -969,8 +1115,9 @@ const Inventory = () => {
                       { label: 'Department', val: issueForm.department },
                       { label: 'Inventory No', val: issueForm.inventoryNo },
                       { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
+                      { label: 'Last Issued (Date)', val: validationState.committed || '0' }
                     ].map((f, i) => (
-                      <div key={i} className="space-y-1.5 flex-1 min-w-[30%]">
+                      <div key={i} className="space-y-1.5 flex-1 min-w-[22%]">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
                         <div className="h-10 flex items-center bg-white/50 px-3 rounded-lg border border-slate-200/50 text-xs font-bold text-slate-500 truncate">{f.val}</div>
                       </div>
@@ -1030,64 +1177,29 @@ const Inventory = () => {
                 )}
 
                 {isIssueModalOpen && (
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label><input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label><input type="date" value={issueForm.eventDate} onChange={(e) => setIssueForm(p => ({ ...p, eventDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" /></div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Type *</label>
-                      <select value={issueForm.eventTime} onChange={(e) => setIssueForm(p => ({ ...p, eventTime: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium bg-white outline-none">
-                        <option value="">Select time</option>
-                        <option value="Breakfast">Breakfast</option>
-                        <option value="Lunch">Lunch</option>
-                        <option value="Dinner">Dinner</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {isIssueModalOpen && (
                   <div className="space-y-4">
-                    {/* Row 1: Issue Qty, renting rate, estimated cost */}
+                    {/* Row 1: Party Name, Event Date, Event Type */}
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-1">
-                        <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
-                        <input 
-                          type="number" 
-                        onWheel={(e) => e.target.blur()} 
-                          value={issueForm.issueData} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
-                          required 
-                          placeholder="0"
-                          className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${Number(issueForm.issueData) > Number(issueForm.openingBalance) ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
-                        />
-                        {Number(issueForm.issueData) > Number(issueForm.openingBalance) && (
-                          <p className="text-[10px] text-red-500 font-bold mt-1 animate-pulse px-1 flex items-center gap-1">
-                            <X className="h-2 w-2" /> Cannot exceed opening balance ({issueForm.openingBalance})
-                          </p>
-                        )}
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
+                        <input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (₹) *</label>
-                        <input 
-                          type="number" 
-                        onWheel={(e) => e.target.blur()} 
-                          step="0.01" 
-                          value={issueForm.perUnit} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} 
-                          required 
-                          placeholder="0.00"
-                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
-                        />
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label>
+                        <input type="date" value={issueForm.eventDate} onChange={(e) => setIssueForm(p => ({ ...p, eventDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Estimated Cost</label>
-                        <div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">
-                          ₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}
-                        </div>
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Type *</label>
+                        <select value={issueForm.eventTime} onChange={(e) => setIssueForm(p => ({ ...p, eventTime: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium bg-white outline-none">
+                          <option value="">Select time</option>
+                          <option value="Breakfast">Breakfast</option>
+                          <option value="Lunch">Lunch</option>
+                          <option value="Dinner">Dinner</option>
+                        </select>
                       </div>
                     </div>
 
-                    {/* Row 2: Venue Name, Damage/Missing Rate, item-attachment */}
+                    {/* Row 2: Venue Name, Issue Qty, Renting Rate */}
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Venue Name</label>
@@ -1100,16 +1212,60 @@ const Inventory = () => {
                         />
                       </div>
                       <div className="space-y-1">
+                        <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
+                        <input 
+                          type="number" 
+                          onWheel={(e) => e.target.blur()} 
+                          value={issueForm.issueData} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
+                          required 
+                          placeholder="0"
+                          className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${validationState.isOver ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
+                        />
+                        {validationState.isOver && (
+                          <div className="absolute z-10 w-full">
+                            <p className="text-[10px] text-red-600 font-black mt-2 animate-pulse px-1 flex items-center gap-2 uppercase tracking-widest bg-red-50 py-1.5 rounded-md border border-red-100 shadow-xl w-fit whitespace-nowrap">
+                              <Zap className="h-3 w-3 fill-red-600" /> Over Capacity: Only {validationState.availableForThisGroup} units left
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (₹) *</label>
+                        <input 
+                          type="number" 
+                          onWheel={(e) => e.target.blur()} 
+                          step="0.01" 
+                          value={issueForm.perUnit} 
+                          onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} 
+                          required 
+                          readOnly={issueForm.forType === 'H3'}
+                          placeholder="0.00"
+                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`} 
+                        />
+                      </div>
+                    </div>
+
+                    {/* Row 3: Estimated Cost, Damage/Missing Rate, Item-Attachment */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-emerald-600 uppercase tracking-wide">Estimated Cost</label>
+                        <div className="w-full h-11 px-4 rounded-lg border border-emerald-100 bg-emerald-50/30 flex items-center text-sm font-bold text-emerald-700 shadow-sm">
+                          ₹{(Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Damage/Missing Rate (₹) *</label>
                         <input 
                           type="number" 
-                        onWheel={(e) => e.target.blur()} 
+                          onWheel={(e) => e.target.blur()} 
                           step="0.01" 
                           value={issueForm.unit} 
                           onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} 
                           required 
+                          readOnly={issueForm.forType === 'H3'}
                           placeholder="0.00"
-                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
+                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`} 
                         />
                       </div>
                       <div className="space-y-1">
@@ -1127,7 +1283,7 @@ const Inventory = () => {
                       </div>
                     </div>
 
-                    {/* Row 3: Image Preview, Remarks */}
+                    {/* Final Row: Image Preview & Remarks (Stay in 2-cols) */}
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Preview</label>
@@ -1195,7 +1351,7 @@ const Inventory = () => {
                   <button type="button" onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
                   <button 
                     type="submit" 
-                    disabled={isSubmitting || (isIssueModalOpen && Number(issueForm.issueData) > Number(issueForm.openingBalance))} 
+                    disabled={isSubmitting || (isIssueModalOpen && validationState.isOver)} 
                     className={`min-w-[140px] px-10 py-2.5 rounded-xl text-white text-sm font-bold shadow-xl transition-all flex items-center justify-center gap-2 ${isIssueModalOpen ? 'bg-violet-600' : 'bg-fuchsia-600'} hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Processing...</span></> : (isIssueModalOpen ? 'Issue Items' : 'Return Items')}

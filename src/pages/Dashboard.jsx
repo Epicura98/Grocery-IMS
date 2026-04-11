@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { formatDate, parseNumber } from "../utils/helpers";
+import { fetchSheetDataInBackground } from "../utils/api";
 import {
   TrendingUp,
   Package,
@@ -97,6 +98,7 @@ export default function Dashboard() {
   };
 
   const SCRIPT_URL = import.meta.env.VITE_SCRIPT_URL;
+  const spreadsheetId = import.meta.env.VITE_SHEET_ID;
 
   const formatNumber = (num) => {
     if (showExactValues) return num.toLocaleString('en-IN');
@@ -118,7 +120,7 @@ export default function Dashboard() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=fetch&sheet=INVENTORY`);
+      const response = await fetch(`${SCRIPT_URL}?action=fetch&sheet=INVENTORY&spreadsheetId=${spreadsheetId}`);
       const result = await response.json();
       if (result.success && result.data) {
         const validRows = result.data.slice(1).filter(row => row[1] && row[1].toString().trim() !== "");
@@ -149,32 +151,30 @@ export default function Dashboard() {
 
   const fetchHistoryData = async () => {
     setHistoryLoading(true);
-    try {
-      const response = await fetch(`${SCRIPT_URL}?action=fetch&sheet=History INVENTORY`);
-      const result = await response.json();
-      if (result.success && result.data) {
-        // Only rows with a non-empty Date (Column A) are valid history records
-        const validRows = result.data.slice(1).filter(row => row[0] && row[0].toString().trim() !== "");
-        setHistoryData(validRows.map((row, idx) => ({
-          id: `hist-${idx}`,
-          date: row[0],
-          serial: row[1],
-          name: row[2],
-          purchase: parseNumber(row[3]),
-          opening: parseNumber(row[4]),
-          closing: parseNumber(row[5]),
-          balance: parseNumber(row[6]),
-          issue: parseNumber(row[7]),
-          returns: parseNumber(row[8]),
-          damage: parseNumber(row[9]),
-          missing: parseNumber(row[10])
-        })));
-      }
-    } catch (err) {
-      console.error("History fetch error:", err);
-    } finally {
-      setHistoryLoading(false);
-    }
+    fetchSheetDataInBackground(SCRIPT_URL, "History INVENTORY", spreadsheetId, (data, isComplete) => {
+      // Filter valid rows (non-empty Date at index 0)
+      const validRows = data.filter(row => row[0] && row[0].toString().trim() !== "");
+      
+      const mappedData = validRows.map((row, idx) => ({
+        id: `hist-${idx}`,
+        date: row[0],
+        serial: row[1],
+        name: row[2],
+        purchase: parseNumber(row[3]),
+        opening: parseNumber(row[4]),
+        closing: parseNumber(row[5]),
+        balance: parseNumber(row[6]),
+        issue: parseNumber(row[7]),
+        returns: parseNumber(row[8]),
+        damage: parseNumber(row[9]),
+        missing: parseNumber(row[10])
+      }));
+
+      setHistoryData(mappedData);
+      if (isComplete) setHistoryLoading(false);
+      // Stop spinner as soon as we have data
+      if (mappedData.length > 0) setHistoryLoading(false);
+    });
   };
 
   useEffect(() => {
