@@ -492,14 +492,15 @@ const Inventory = () => {
       partyName: issueRow[6],
       eventDate: toInputDate(issueRow[7]),
       issueQty: parseNumber(issueRow[8]),
-      damageRate: parseNumber(issueRow[10]), // Corrected index for damageRate/rentingRate based on issued sheet
-      rentingRate: parseNumber(issueRow[11]),
-      openingBalance: parseNumber(issueRow[12]),
-      closingBalance: parseNumber(issueRow[13]),
+      damageRate: parseNumber(issueRow[9]), 
+      rentingRate: parseNumber(issueRow[10]),
+      openingBalance: parseNumber(issueRow[11]),
+      closingBalance: parseNumber(issueRow[12]),
       foodName: issueRow[14],
       imageUrl: issueRow[15],
       forType: issueRow[19]
     }));
+    setIsReturnModalOpen(true);
     if (issueRow[15]) setImagePreview(getDisplayableImageUrl(issueRow[15]));
   };
 
@@ -508,8 +509,7 @@ const Inventory = () => {
     const first = rows[0];
     const totalQty = rows.reduce((sum, r) => sum + parseNumber(r[8]), 0);
     
-    setReturnForm(prev => ({
-      ...prev,
+    setReturnForm({
       inventoryNo: first[2],
       inventoryType: first[3],
       department: first[4],
@@ -517,12 +517,20 @@ const Inventory = () => {
       partyName: first[6],
       eventDate: toInputDate(first[7]),
       issueQty: totalQty,
-      damageRate: parseNumber(first[10]), 
-      rentingRate: parseNumber(first[11]),
+      damageRate: parseNumber(first[9]), 
+      rentingRate: parseNumber(first[10]),
+      openingBalance: parseNumber(first[11]),
+      closingBalance: '', 
       foodName: first[14],
       imageUrl: first[15],
-      forType: first[19]
-    }));
+      returnData: '0', 
+      damageItems: '0', 
+      missingItems: '0',
+      remarks: '',
+      totalCost: '0',
+      forType: first[19] || '',
+      returnDate: new Date().toISOString().split('T')[0]
+    });
     setMatchingIssuedRows(rows);
     if (first[15]) setImagePreview(getDisplayableImageUrl(first[15]));
   };
@@ -956,11 +964,14 @@ const Inventory = () => {
                         value={issueForm.forType} 
                         onChange={(e) => {
                           const val = e.target.value;
+                          const item = inventoryItems.find(i => i.itemsName === issueForm.itemsName && i.inventoryType === issueForm.inventoryType);
+                          const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(issueForm.itemsName).trim().toLowerCase());
+                          
                           setIssueForm(p => ({ 
                             ...p, 
                             forType: val,
-                            perUnit: val === 'H3' ? '0' : p.perUnit,
-                            unit: val === 'H3' ? '0' : p.unit
+                            perUnit: val === 'H3' ? '0' : (masterRow ? masterRow[5] : (item ? item.perUnit : p.perUnit)),
+                            unit: val === 'H3' ? '0' : (masterRow ? masterRow[6] : (item ? item.unit : p.unit))
                           }));
                         }} 
                         required 
