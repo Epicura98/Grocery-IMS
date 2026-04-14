@@ -18,7 +18,7 @@ import {
   FileText
 } from 'lucide-react';
 import AdminLayout from '../components/layout/AdminLayout';
-import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber } from '../utils/helpers';
+import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber, formatIndianAmount, formatDateTime } from '../utils/helpers';
 import { fetchSheetDataInBackground } from '../utils/api';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -34,6 +34,7 @@ const Inventory = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
   const [isReportGenerating, setIsReportGenerating] = useState(false);
+  const [showFullTotal, setShowFullTotal] = useState(false);
 
   // Data State
   const [inventoryItems, setInventoryItems] = useState([]);
@@ -71,6 +72,10 @@ const Inventory = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editingSerialNo, setEditingSerialNo] = useState(null);
   const [originalTimestamp, setOriginalTimestamp] = useState(null);
+
+  // Edit State
+  const [editDataMap, setEditDataMap] = useState({}); // { [serial]: rowArray }
+  const [selectedSerials, setSelectedSerials] = useState(new Set());
 
   const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
   const folderId = import.meta.env.VITE_INVENTORY_FOLDER_ID;
@@ -124,7 +129,6 @@ const Inventory = () => {
     { key: 'qty', label: 'Issue Qty', index: 8 },
     { key: 'image', label: 'Image', index: 15 }
   ] : [
-    { key: 'actions', label: 'Actions', index: -1 },
     { key: 'date', label: 'Date', index: 0 },
     { key: 'serial', label: 'Serial No.', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
@@ -190,6 +194,129 @@ const Inventory = () => {
       if (match && match[1]) return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w600`;
       return url;
     } catch (e) { return url; }
+  };
+
+  const toggleRowSelection = (row) => {
+    const sn = row[1];
+    const newSelected = new Set(selectedSerials);
+    const newEditMap = { ...editDataMap };
+    
+    if (newSelected.has(sn)) {
+      newSelected.delete(sn);
+      delete newEditMap[sn];
+    } else {
+      newSelected.add(sn);
+      newEditMap[sn] = [...row];
+    }
+    setSelectedSerials(newSelected);
+    setEditDataMap(newEditMap);
+  };
+
+  const handleSelectAll = (filteredRows) => {
+    if (selectedSerials.size === filteredRows.length && filteredRows.length > 0) {
+      setSelectedSerials(new Set());
+      setEditDataMap({});
+    } else {
+      const newSelected = new Set();
+      const newEditMap = {};
+      filteredRows.forEach(row => {
+        const sn = row[1];
+        newSelected.add(sn);
+        newEditMap[sn] = [...row];
+      });
+      setSelectedSerials(newSelected);
+      setEditDataMap(newEditMap);
+    }
+  };
+
+  const handleInlineEdit = (sn, index, value, type) => {
+    setEditDataMap(prev => {
+      const row = [...prev[sn]];
+      row[index] = value;
+      
+      if (type === 'issued') {
+        // Recalculate Estimated Cost (Index 18) = Issue Qty (8) * Per Unit (10)
+        if (index === 8 || index === 10) {
+          row[18] = (parseFloat(row[8] || 0) * parseFloat(row[10] || 0)).toFixed(2);
+        }
+        // Update Closing (Index 12/13) = Opening (11) - Issue (8)
+        if (index === 11 || index === 8) {
+          const closing = (parseFloat(row[11] || 0) - parseFloat(row[8] || 0));
+          row[12] = closing;
+          row[13] = closing;
+        }
+      } else if (type === 'return') {
+        // Sanity Check: Return Qty >= 0 (User requirement: basic sanity checks)
+        // Recalculate Total Cost (Index 20) = ((Damage(11) + Missing(12)) * DamageRate(13)) + (ReturnQty(10) * RentingRate(14))
+        if ([10, 11, 12, 13, 14].includes(index)) {
+          const dmg = parseFloat(row[11] || 0);
+          const mis = parseFloat(row[12] || 0);
+          const ret = parseFloat(row[10] || 0);
+          const dRate = parseFloat(row[13] || 0);
+          const rRate = parseFloat(row[14] || 0);
+          row[20] = ((dmg + mis) * dRate + (ret * rRate)).toFixed(2);
+          
+          // Logic requirement from plan: Issue Qty >= Damage + Missing
+          const issueQty = parseFloat(row[9] || 0);
+          if (dmg + mis > issueQty) {
+            // Optional: reset or alert, but usually we just allow it and let price reflect
+          }
+        }
+      }
+      return { ...prev, [sn]: row };
+    });
+  };
+
+  const changedRowsCount = useMemo(() => {
+    const currentRows = activeTab === 'issued' ? issueHistory : returnHistory;
+    return Object.keys(editDataMap).filter(sn => {
+      const editRow = editDataMap[sn];
+      const originalRow = currentRows.find(r => r[1] === sn);
+      if (!originalRow) return false;
+      return JSON.stringify(editRow) !== JSON.stringify(originalRow);
+    }).length;
+  }, [editDataMap, issueHistory, returnHistory, activeTab]);
+
+  const handleBatchSubmit = async () => {
+    setIsSubmitting(true);
+    try {
+      const rowsToUpdate = Object.values(editDataMap).map(row => {
+        const newRow = [...row];
+        newRow[0] = formatDateTime(newRow[0]);
+        if (activeTab === 'issued') {
+          if (newRow[7]) newRow[7] = formatDate(newRow[7]);
+          // Clear Column V for Issued sheet
+          while (newRow.length < 22) newRow.push("");
+          newRow[21] = "";
+        } else if (activeTab === 'return') {
+          if (newRow[8]) newRow[8] = formatDate(newRow[8]);
+          // Also format eventDate (index 7) in return sheet if it exists
+          if (newRow[7]) newRow[7] = formatDate(newRow[7]);
+        }
+        return newRow;
+      });
+      const response = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          action: 'batchUpdate',
+          sheetName: activeTab === 'issued' ? 'Issued' : 'Return',
+          spreadsheetId: spreadsheetId,
+          rowsData: JSON.stringify(rowsToUpdate)
+        })
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast(`${rowsToUpdate.length} record(s) updated successfully`);
+        setEditDataMap({});
+        setSelectedSerials(new Set());
+        fetchHistory();
+      } else throw new Error(result.error);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const showToast = (message, type = 'success') => {
@@ -465,7 +592,7 @@ const Inventory = () => {
       const opening = parseFloat(issueForm.openingBalance) || 0;
       const consumed = parseFloat(issueForm.issueData) || 0;
       const closing = opening - consumed;
-      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent', issueForm.issuer || ''];
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent', issueForm.issuer || '', ''];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -730,13 +857,38 @@ const Inventory = () => {
         )}
 
         <div className="flex items-center justify-between px-8 pt-6 pb-4">
-          <div><h1 className="text-3xl font-bold text-slate-800 tracking-tight">Inventory Management</h1></div>
           <div className="flex items-center gap-4">
-            <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
+            <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Inventory Management</h1>
+            {Object.keys(editDataMap).length > 0 && (
+              <button
+                onClick={handleBatchSubmit}
+                disabled={isSubmitting || changedRowsCount === 0}
+                className={`h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 ${
+                  changedRowsCount > 0 
+                  ? "bg-orange-600 text-white hover:bg-orange-700 shadow-orange-100" 
+                  : "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
+                }`}
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Submit {changedRowsCount} {changedRowsCount === 1 ? 'Change' : 'Changes'}
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+            <div 
+              onClick={() => setShowFullTotal(!showFullTotal)}
+              className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500 cursor-pointer hover:bg-emerald-700 transition-all select-none"
+              title={showFullTotal ? "Click to see short format" : "Click to see exact amount"}
+            >
               <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">
                 {activeTab === 'issued' ? 'Issue Amount:' : 'Return Amount:'}
               </span>
-              <span className="text-sm font-bold text-white">₹{totalInventoryCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <span className="text-sm font-bold text-white">
+                ₹{showFullTotal 
+                   ? totalInventoryCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                   : formatIndianAmount(totalInventoryCost)
+                 }
+              </span>
             </div>
             <button onClick={() => { setIsIssueModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-violet-100">
               <ClipboardList className="h-4 w-4 text-white/70" /> Issue Form
@@ -901,6 +1053,14 @@ const Inventory = () => {
             <table className="w-full text-center border-collapse border-separate border-spacing-0">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-violet-50">
+                  <th className="px-4 py-4 w-12 text-center bg-violet-50 border-b border-violet-100/50">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 rounded border-violet-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                      checked={getFilteredHistory().length > 0 && selectedSerials.size === getFilteredHistory().length}
+                      onChange={() => handleSelectAll(getFilteredHistory())}
+                    />
+                  </th>
                   {columnConfig.map(col => visibleColumns[col.key] !== false && (
                     <th key={col.key} className={`px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center ${['date', 'eventDate', 'returnDate'].includes(col.key) ? 'min-w-[120px]' : ''}`}>{col.label}</th>
                   ))}
@@ -908,33 +1068,55 @@ const Inventory = () => {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {isTableLoading ? (
-                  <tr><td colSpan={columnConfig.length} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
+                  <tr><td colSpan={columnConfig.length + 1} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
                 ) : getFilteredHistory().length === 0 ? (
-                  <tr><td colSpan={columnConfig.length} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
+                  <tr><td colSpan={columnConfig.length + 1} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
                 ) : (
-                  getFilteredHistory().map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/50 transition-all font-sans">
-                      {columnConfig.map(col => visibleColumns[col.key] !== false && (
-                        <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
-                          {col.key === 'actions' ? (
-                            <button onClick={() => handleEditReturn(row)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
-                          ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
-                            <span className="text-slate-400 whitespace-nowrap">{formatDate(row[col.index])}</span>
-                          ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{row[col.index]}</span>
-                          ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{row[col.index]}</span>
-                          ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{row[col.index]}</span>
-                          ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
-                          ) : col.key === 'image' ? (
-                            row[col.index] && row[col.index] !== 'No Image' ? (
-                              <div className="relative flex justify-center group/img">
-                                <a href={row[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform"><img src={getDisplayableImageUrl(row[col.index])} alt="Item" className="h-full w-full object-cover" /></a>
-                              </div>
-                            ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
-                          ) : row[col.index] || '-'}
+                  getFilteredHistory().map((row, idx) => {
+                    const sn = row[1];
+                    const isSelected = selectedSerials.has(sn);
+                    const currentData = editDataMap[sn] || row;
+
+                    return (
+                      <tr key={idx} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'hover:bg-slate-50/50'}`}>
+                        <td className="px-4 py-3 text-center">
+                          <input 
+                            type="checkbox" 
+                            className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                            checked={isSelected}
+                            onChange={() => toggleRowSelection(row)}
+                          />
                         </td>
-                      ))}
-                    </tr>
-                  ))
+                        {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                          <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
+                            {isSelected && activeTab === 'issued' && col.key === 'qty' ? (
+                              <input type="number" value={currentData[8]} onChange={(e) => handleInlineEdit(sn, 8, e.target.value, 'issued')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                            ) : isSelected && activeTab === 'return' && col.key === 'qty' ? (
+                              <input type="number" value={currentData[10]} onChange={(e) => handleInlineEdit(sn, 10, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                            ) : isSelected && activeTab === 'return' && col.key === 'damage' ? (
+                              <input type="number" value={currentData[11]} onChange={(e) => handleInlineEdit(sn, 11, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                            ) : isSelected && activeTab === 'return' && col.key === 'missing' ? (
+                              <input type="number" value={currentData[12]} onChange={(e) => handleInlineEdit(sn, 12, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                            ) : col.key === 'actions' ? (
+                              <button onClick={() => handleEditReturn(currentData)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
+                            ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
+                              <span className="text-slate-400 whitespace-nowrap">{formatDate(currentData[col.index])}</span>
+                            ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{currentData[col.index]}</span>
+                            ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{currentData[col.index]}</span>
+                            ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{currentData[col.index]}</span>
+                            ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
+                            ) : col.key === 'image' ? (
+                              currentData[col.index] && currentData[col.index] !== 'No Image' ? (
+                                <div className="relative flex justify-center group/img">
+                                  <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform"><img src={getDisplayableImageUrl(currentData[col.index])} alt="Item" className="h-full w-full object-cover" /></a>
+                                </div>
+                              ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
+                            ) : currentData[col.index] || '-'}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

@@ -25,6 +25,28 @@ export const formatDate = (dateStr) => {
 };
 
 /**
+ * Formats a date string into DD-MM-YYYY HH:mm:ss for backend sumbissions.
+ */
+export const formatDateTime = (dateStr) => {
+  if (!dateStr || dateStr === "undefined" || dateStr === "null") return "-";
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      return String(dateStr);
+    }
+    const d = String(date.getDate()).padStart(2, '0');
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const y = date.getFullYear();
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${d}-${m}-${y} ${hh}:${mm}:${ss}`;
+  } catch (e) {
+    return String(dateStr);
+  }
+};
+
+/**
  * Parses a date string from sheet row data (DD/MM/YYYY, DD-MM-YYYY, or ISO) into a Date object.
  * Used for date-range filter comparisons. Returns null if unparseable.
  */
@@ -135,4 +157,17 @@ export const compressImage = (file, maxWidth = 1000, quality = 0.7) => {
     };
     reader.onerror = (err) => reject(err);
   });
+};
+
+/**
+ * Formats a number according to the Indian numbering system with abbreviations.
+ * e.g., 1,000 -> 1k, 1,00,000 -> 1L, 1,00,00,000 -> 1Cr.
+ */
+export const formatIndianAmount = (num) => {
+  if (num === undefined || num === null || isNaN(num)) return "0";
+  const val = Math.abs(num);
+  if (val >= 10000000) return (num / 10000000).toFixed(2) + " Cr";
+  if (val >= 100000) return (num / 100000).toFixed(2) + " L";
+  if (val >= 1000) return (num / 1000).toFixed(2) + " k";
+  return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };

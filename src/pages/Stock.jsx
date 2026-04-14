@@ -31,7 +31,7 @@ import {
   Settings2
 } from "lucide-react";
 import AdminLayout from "../components/layout/AdminLayout";
-import { formatDate, compressImage, parseRowDate } from "../utils/helpers";
+import { formatDate, compressImage, parseRowDate, formatIndianAmount, formatDateTime } from "../utils/helpers";
 import { fetchSheetDataInBackground } from "../utils/api";
 
 export default function Stock() {
@@ -42,6 +42,7 @@ export default function Stock() {
   const [isLoading, setIsLoading] = useState(true);
   const [isTableLoading, setIsTableLoading] = useState(true);
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
+  const [showFullTotal, setShowFullTotal] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
   const [isColMenuOpen, setIsColMenuOpen] = useState(false);
@@ -58,6 +59,10 @@ export default function Stock() {
     departmentOptions: [],
     unitOptions: []
   });
+
+  // Edit State
+  const [editDataMap, setEditDataMap] = useState({}); // { [serial]: rowArray }
+  const [selectedSerials, setSelectedSerials] = useState(new Set());
 
   // Table Filters State
   const [filterType, setFilterType] = useState("");
@@ -152,6 +157,92 @@ export default function Stock() {
       return url;
     } catch (e) { return url; }
   }
+
+  const toggleRowSelection = (row) => {
+    const sn = row[1];
+    const newSelected = new Set(selectedSerials);
+    const newEditMap = { ...editDataMap };
+    
+    if (newSelected.has(sn)) {
+      newSelected.delete(sn);
+      delete newEditMap[sn];
+    } else {
+      newSelected.add(sn);
+      newEditMap[sn] = [...row];
+    }
+    setSelectedSerials(newSelected);
+    setEditDataMap(newEditMap);
+  };
+
+  const handleSelectAll = (filteredRows) => {
+    if (selectedSerials.size === filteredRows.length && filteredRows.length > 0) {
+      setSelectedSerials(new Set());
+      setEditDataMap({});
+    } else {
+      const newSelected = new Set();
+      const newEditMap = {};
+      filteredRows.forEach(row => {
+        const sn = row[1];
+        newSelected.add(sn);
+        newEditMap[sn] = [...row];
+      });
+      setSelectedSerials(newSelected);
+      setEditDataMap(newEditMap);
+    }
+  };
+
+  const handleInlineEdit = (sn, index, value) => {
+    setEditDataMap(prev => {
+      const row = [...prev[sn]];
+      row[index] = value;
+      // Recalculate Cost Price (Index 12) = Opening Bal (7) * Per Unit (9)
+      if (index === 7 || index === 9) {
+        row[12] = (parseFloat(row[7] || 0) * parseFloat(row[9] || 0)).toFixed(2);
+      }
+      return { ...prev, [sn]: row };
+    });
+  };
+  const changedRowsCount = useMemo(() => {
+    const currentRows = activeTab === 'purchase' ? stockRows : rePurchaseRows;
+    return Object.keys(editDataMap).filter(sn => {
+      const editRow = editDataMap[sn];
+      const originalRow = currentRows.find(r => r[1] === sn);
+      if (!originalRow) return false;
+      return JSON.stringify(editRow) !== JSON.stringify(originalRow);
+    }).length;
+  }, [editDataMap, stockRows, rePurchaseRows, activeTab]);
+
+  const handleBatchSubmit = async () => {
+    setIsSubmitting(true);
+    try {
+      const rowsToUpdate = Object.values(editDataMap).map(row => {
+        const newRow = [...row];
+        newRow[0] = formatDateTime(newRow[0]);
+        return newRow;
+      });
+      const response = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          action: 'batchUpdate',
+          sheetName: activeTab === 'purchase' ? 'Add-Stock' : 'Re-Purchase',
+          spreadsheetId: spreadsheetId,
+          rowsData: JSON.stringify(rowsToUpdate)
+        })
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast(`${rowsToUpdate.length} record(s) updated successfully`);
+        setEditDataMap({});
+        setSelectedSerials(new Set());
+        fetchStockData();
+      } else throw new Error(result.error);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const fetchStockData = async () => {
     setIsTableLoading(true);
@@ -383,7 +474,7 @@ export default function Stock() {
 
     setIsAddingItem(true);
     try {
-      const rowData = [form.inventoryType, valueToAdd, form.department, "", form.unit, form.rentalPrice || "0", form.perUnit || "0"];
+      const rowData = [form.inventoryType, valueToAdd, form.department, "", form.unit, form.rentalPrice || "0", form.perUnit || "0", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -417,6 +508,10 @@ export default function Stock() {
       const updatedRow = [...masterRow];
       updatedRow[5] = rentalPrice || masterRow[5] || "0";
       updatedRow[6] = damagePrice || masterRow[6] || "0";
+      
+      // Ensure row has 22 elements and index 21 is empty
+      while (updatedRow.length < 22) updatedRow.push("");
+      updatedRow[21] = "";
 
       await fetch(scriptUrl, {
         method: 'POST',
@@ -458,7 +553,8 @@ export default function Stock() {
       const finalRowData = [
         timestamp, '', inventoryNo, form.inventoryType, form.department, form.itemsName,
         form.vendorName, form.openingBalance || 0, form.unit, form.perUnit || 0, imageUrl, form.remarks,
-        (Number(form.openingBalance || 0) * Number(form.perUnit || 0)).toFixed(2)
+        (Number(form.openingBalance || 0) * Number(form.perUnit || 0)).toFixed(2),
+        '', '', '', '', '', '', '', '', ''
       ];
 
       const saveRes = await fetch(scriptUrl, {
@@ -504,7 +600,8 @@ export default function Stock() {
       const finalRowData = [
         timestamp, '', purchaseForm.inventoryNo, purchaseForm.inventoryType, purchaseForm.department, purchaseForm.itemsName,
         purchaseForm.vendorName, purchaseForm.openingBalance || 0, purchaseForm.unit, purchaseForm.perUnit || 0, finalImageUrl, purchaseForm.remarks,
-        (Number(purchaseForm.openingBalance || 0) * Number(purchaseForm.perUnit || 0)).toFixed(2)
+        (Number(purchaseForm.openingBalance || 0) * Number(purchaseForm.perUnit || 0)).toFixed(2),
+        '', '', '', '', '', '', '', '', ''
       ];
 
       const saveRes = await fetch(scriptUrl, {
@@ -561,9 +658,32 @@ export default function Stock() {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500">
+            {Object.keys(editDataMap).length > 0 && (
+              <button
+                onClick={handleBatchSubmit}
+                disabled={isSubmitting || changedRowsCount === 0}
+                className={`h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 ${
+                  changedRowsCount > 0 
+                  ? "bg-orange-600 text-white hover:bg-orange-700 shadow-orange-100" 
+                  : "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
+                }`}
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Submit {changedRowsCount} {changedRowsCount === 1 ? 'Change' : 'Changes'}
+              </button>
+            )}
+            <div 
+              onClick={() => setShowFullTotal(!showFullTotal)}
+              className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500 cursor-pointer hover:bg-emerald-700 transition-all select-none"
+              title={showFullTotal ? "Click to see short format" : "Click to see exact amount"}
+            >
               <span className="text-[10px] font-black uppercase tracking-widest opacity-80 mr-3">{activeTab === 'purchase' ? 'Purchase Total:' : 'Re-Purchase Total:'}</span>
-              <span className="text-sm font-bold text-white">₹{totalStockCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <span className="text-sm font-bold text-white">
+                ₹{showFullTotal 
+                   ? totalStockCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                   : formatIndianAmount(totalStockCost)
+                 }
+              </span>
             </div>
             <button
               onClick={() => { setIsModalOpen(true); setImagePreview(null); setSelectedImage(null); }}
@@ -758,6 +878,14 @@ export default function Stock() {
             <table className="w-full text-center border-collapse border-separate border-spacing-0">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-violet-50 border-none shadow-sm">
+                  <th className="px-4 py-4 w-12 text-center bg-violet-50">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 rounded border-violet-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                      checked={filteredStockRows.length > 0 && selectedSerials.size === filteredStockRows.length}
+                      onChange={() => handleSelectAll(filteredStockRows)}
+                    />
+                  </th>
                   {columnConfig.map(col => visibleColumns[col.key] && (
                     <th key={col.key} className="px-6 py-4 text-[10px] font-bold text-violet-600 whitespace-nowrap uppercase tracking-[0.15em] text-center bg-violet-50">
                       {col.label}
@@ -768,7 +896,7 @@ export default function Stock() {
               <tbody className="divide-y divide-slate-100">
                 {isTableLoading ? (
                   <tr>
-                    <td colSpan={columnConfig.filter(c => visibleColumns[c.key]).length} className="px-6 py-24 text-center">
+                    <td colSpan={columnConfig.filter(c => visibleColumns[c.key]).length + 1} className="px-6 py-24 text-center">
                       <div className="flex flex-col items-center gap-3">
                         <Loader2 className="h-8 w-8 animate-spin text-slate-300" />
                         <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Loading records...</p>
@@ -777,7 +905,7 @@ export default function Stock() {
                   </tr>
                 ) : filteredStockRows.length === 0 ? (
                   <tr>
-                    <td colSpan={columnConfig.filter(c => visibleColumns[c.key]).length} className="px-6 py-24 text-center">
+                    <td colSpan={columnConfig.filter(c => visibleColumns[c.key]).length + 1} className="px-6 py-24 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Database className="h-8 w-8 text-slate-200" />
                         <p className="text-sm font-semibold text-slate-400">No records found</p>
@@ -785,48 +913,69 @@ export default function Stock() {
                     </td>
                   </tr>
                 ) : (
-                  filteredStockRows.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/70 transition-colors duration-100 border-b border-slate-50 last:border-0">
-                      {columnConfig.map(col => visibleColumns[col.key] && (
-                        <td key={col.key} className="px-4 py-3 text-xs whitespace-nowrap overflow-hidden text-ellipsis max-w-[200px] text-center">
-                          {col.key === 'date' ? (
-                            <span className="text-slate-500 font-medium">{formatDate(row[0])}</span>
-                          ) : col.key === 'image' ? (
-                            row[col.index] ? (
-                              <div className="flex justify-center">
-                                <a href={row[col.index]} target="_blank" rel="noopener noreferrer" className="group relative">
-                                  <img
-                                    src={getDisplayableImageUrl(row[col.index])}
-                                    alt="Preview"
-                                    className="h-10 w-10 min-w-[40px] rounded-lg object-cover border border-slate-100 shadow-sm group-hover:scale-110 transition-transform duration-200"
-                                    onError={(e) => {
-                                      e.target.onerror = null;
-                                      e.target.src = 'https://placehold.co/40x40?text=IMG';
-                                    }}
-                                  />
-                                  <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 rounded-lg flex items-center justify-center transition-opacity">
-                                    <ArrowUpRight className="h-3 w-3 text-white" />
-                                  </div>
-                                </a>
-                              </div>
-                            ) : (
-                              <span className="text-slate-300 italic text-[10px]">No Image</span>
-                            )
-                          ) : col.key === 'serial' ? (
-                            <span className="text-slate-500 font-medium">{row[col.index]}</span>
-                          ) : col.key === 'perUnit' ? (
-                            <span className="font-bold text-blue-600 whitespace-nowrap">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
-                          ) : col.key === 'costPrice' ? (
-                            <span className="font-bold text-emerald-600 whitespace-nowrap">₹{parseFloat(row[col.index] || 0).toFixed(2)}</span>
-                          ) : col.key === 'item' ? (
-                            <span className="font-bold text-slate-800">{row[col.index]}</span>
-                          ) : (
-                            <span className="text-slate-600">{row[col.index]}</span>
-                          )}
+                  filteredStockRows.map((row, idx) => {
+                    const sn = row[1];
+                    const isSelected = selectedSerials.has(sn);
+                    const currentData = editDataMap[sn] || row;
+
+                    return (
+                      <tr key={idx} className={`transition-colors duration-100 border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'hover:bg-slate-50/70'}`}>
+                        <td className="px-4 py-3 text-center">
+                          <input 
+                            type="checkbox" 
+                            className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                            checked={isSelected}
+                            onChange={() => toggleRowSelection(row)}
+                          />
                         </td>
-                      ))}
-                    </tr>
-                  ))
+                        {columnConfig.map(col => visibleColumns[col.key] && (
+                          <td key={col.key} className="px-4 py-3 text-xs whitespace-nowrap overflow-hidden text-ellipsis max-w-[200px] text-center">
+                            {col.key === 'balance' && isSelected ? (
+                              <input 
+                                type="number"
+                                value={currentData[7]}
+                                onChange={(e) => handleInlineEdit(sn, 7, e.target.value)}
+                                className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                              />
+                            ) : col.key === 'costPrice' ? (
+                              <span className={`font-bold ${isSelected ? 'text-emerald-600' : 'text-slate-700'}`}>
+                                ₹{parseFloat(currentData[12] || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            ) : col.key === 'date' ? (
+                              <span className="text-slate-500 font-medium">{formatDate(currentData[0])}</span>
+                            ) : col.key === 'image' ? (
+                              currentData[col.index] ? (
+                                <div className="flex justify-center">
+                                  <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="group relative">
+                                    <img
+                                      src={getDisplayableImageUrl(currentData[col.index])}
+                                      alt="Preview"
+                                      className="h-10 w-10 min-w-[40px] rounded-lg object-cover border border-slate-100 shadow-sm group-hover:scale-110 transition-transform duration-200"
+                                      onError={(e) => {
+                                        e.target.onerror = null;
+                                        e.target.src = 'https://placehold.co/40x40?text=IMG';
+                                      }}
+                                    />
+                                    <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 rounded-lg flex items-center justify-center transition-opacity">
+                                      <ArrowUpRight className="h-3 w-3 text-white" />
+                                    </div>
+                                  </a>
+                                </div>
+                              ) : (
+                                <span className="text-slate-300 italic text-[10px]">No Image</span>
+                              )
+                            ) : col.key === 'item' ? (
+                              <span className="font-bold text-slate-800">{currentData[col.index]}</span>
+                            ) : col.key === 'perUnit' ? (
+                              <span className="font-bold text-blue-600 whitespace-nowrap">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
+                            ) : (
+                              <span className="text-slate-600">{currentData[col.index]}</span>
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
