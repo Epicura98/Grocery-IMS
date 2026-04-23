@@ -1564,7 +1564,9 @@ const Inventory = () => {
                         <select value={issueForm.eventTime} onChange={(e) => setIssueForm(p => ({ ...p, eventTime: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium bg-white outline-none">
                           <option value="">Select time</option>
                           <option value="Breakfast">Breakfast</option>
+                          <option value="Brunch">Brunch</option>
                           <option value="Lunch">Lunch</option>
+                          <option value="Hi-Tea">Hi-Tea</option>
                           <option value="Dinner">Dinner</option>
                         </select>
                       </div>
