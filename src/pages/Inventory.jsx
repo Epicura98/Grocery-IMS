@@ -55,7 +55,7 @@ const Inventory = () => {
   // Filter States - Issued History
   const [issuedFilterItem, setIssuedFilterItem] = useState("");
   const [issuedFilterType, setIssuedFilterType] = useState("");
-  const [issuedFilterDept, setIssuedFilterDept] = useState("");
+  const [issuedFilterParty, setIssuedFilterParty] = useState("");
   const [issuedStartDate, setIssuedStartDate] = useState("");
   const [issuedEndDate, setIssuedEndDate] = useState("");
 
@@ -187,11 +187,20 @@ const Inventory = () => {
     return result.fileUrl;
   };
 
+  const extractDriveFileId = (url) => {
+    if (!url || url === 'No Image') return null;
+    const match = url.match(/(?:[?&]id=|\/d\/)([a-zA-Z0-9\-_]{10,})/);
+    return match ? match[1] : null;
+  };
+
   const getDisplayableImageUrl = (url) => {
     if (!url || url === 'No Image') return null;
     try {
-      const match = url.match(/(?:id=|\/d\/)([a-zA-Z0-9\-_]{25,})/);
-      if (match && match[1]) return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w600`;
+      const match = url.match(/(?:[?&]id=|\/d\/)([a-zA-Z0-9\-_]{10,})/);
+      if (match && match[1]) {
+        // uc?export=view is stable for publicly-shared files
+        return `https://drive.google.com/uc?export=view&id=${match[1]}`;
+      }
       return url;
     } catch (e) { return url; }
   };
@@ -423,16 +432,16 @@ const Inventory = () => {
 
   // Derive Options for Filters
   const issuedOptions = useMemo(() => {
-    const filteredByItem = issueHistory.filter(r => (!issuedFilterType || r[3] === issuedFilterType) && (!issuedFilterDept || r[6] === issuedFilterDept));
-    const filteredByType = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterDept || r[6] === issuedFilterDept));
-    const filteredByDept = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterType || r[3] === issuedFilterType));
+    const filteredByItem = issueHistory.filter(r => (!issuedFilterType || r[3] === issuedFilterType) && (!issuedFilterParty || r[6] === issuedFilterParty));
+    const filteredByType = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterParty || r[6] === issuedFilterParty));
+    const filteredByParty = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterType || r[3] === issuedFilterType));
     
     return {
       items: [...new Set(filteredByItem.map(r => r[5]).filter(Boolean))].sort(),
       types: [...new Set(filteredByType.map(r => r[3]).filter(Boolean))].sort(),
-      depts: [...new Set(filteredByDept.map(r => r[6]).filter(Boolean))].sort(),
+      parties: [...new Set(filteredByParty.map(r => r[6]).filter(Boolean))].sort(),
     };
-  }, [issueHistory, issuedFilterItem, issuedFilterType, issuedFilterDept]);
+  }, [issueHistory, issuedFilterItem, issuedFilterType, issuedFilterParty]);
 
   const returnOptions = useMemo(() => {
     const filteredByItem = returnHistory.filter(r => (!returnFilterType || r[3] === returnFilterType) && (!returnFilterParty || r[6] === returnFilterParty));
@@ -451,7 +460,7 @@ const Inventory = () => {
       const matchesSearch = !searchTerm.trim() || row.some(cell => cell && String(cell).toLowerCase().includes(searchTerm.toLowerCase()));
       const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
       const matchesType = !issuedFilterType || row[3] === issuedFilterType;
-      const matchesDept = !issuedFilterDept || row[6] === issuedFilterDept;
+      const matchesParty = !issuedFilterParty || row[6] === issuedFilterParty;
       let matchesDate = true;
       if (issuedStartDate || issuedEndDate) {
         const rowDate = parseRowDate(row[0]);
@@ -463,9 +472,9 @@ const Inventory = () => {
           if (rowDate > end) matchesDate = false;
         }
       }
-      return matchesSearch && matchesItem && matchesType && matchesDept && matchesDate;
+      return matchesSearch && matchesItem && matchesType && matchesParty && matchesDate;
     });
-  }, [issueHistory, searchTerm, issuedFilterItem, issuedFilterType, issuedFilterDept, issuedStartDate, issuedEndDate]);
+  }, [issueHistory, searchTerm, issuedFilterItem, issuedFilterType, issuedFilterParty, issuedStartDate, issuedEndDate]);
 
   const filteredReturnHistory = useMemo(() => {
     return returnHistory.filter(row => {
@@ -754,7 +763,7 @@ const Inventory = () => {
       if (isIssued) {
         const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
         const matchesType = !issuedFilterType || row[3] === issuedFilterType;
-        const matchesDept = !issuedFilterDept || row[6] === issuedFilterDept;
+        const matchesParty = !issuedFilterParty || row[6] === issuedFilterParty;
         let matchesDate = true;
         if (issuedStartDate || issuedEndDate) {
           const rowDate = parseRowDate(row[0]);
@@ -766,7 +775,7 @@ const Inventory = () => {
             if (rowDate > end) matchesDate = false;
           }
         }
-        return matchesItem && matchesType && matchesDept && matchesDate;
+        return matchesItem && matchesType && matchesParty && matchesDate;
       } else {
         const matchesItem = !returnFilterItem || row[5] === returnFilterItem;
         const matchesType = !returnFilterType || row[3] === returnFilterType;
@@ -786,55 +795,209 @@ const Inventory = () => {
       }
     });
 
-    // 2. Identify visible columns (excluding actions and image for clean report)
+
+    // 1. Identify common fields for the summary header and enforce uniformity restriction
+    if (filteredReportData.length === 0) {
+      showToast('No records to export', 'info');
+      return;
+    }
+
+    const firstRow = filteredReportData[0];
+    const dateIdx = 0;
+    const partyIdx = 6;
+    const forIdx = isIssued ? 19 : 21;
+    const eventDateIdx = isIssued ? 7 : -1;
+    
+    const commonDateRaw = firstRow[dateIdx];
+    const commonParty = firstRow[partyIdx];
+    const commonFor = firstRow[forIdx];
+    const commonEventDateRaw = eventDateIdx !== -1 ? firstRow[eventDateIdx] : null;
+
+    const mismatchFields = [];
+    if (filteredReportData.some(row => formatDate(row[dateIdx]) !== formatDate(commonDateRaw))) mismatchFields.push('Date');
+    if (filteredReportData.some(row => row[partyIdx] !== commonParty)) mismatchFields.push('Party Name');
+    if (filteredReportData.some(row => row[forIdx] !== commonFor)) mismatchFields.push('For');
+    if (eventDateIdx !== -1 && filteredReportData.some(row => formatDate(row[eventDateIdx]) !== formatDate(commonEventDateRaw))) mismatchFields.push('Event Date');
+
+    let uniformInfo = null;
+    if (mismatchFields.length > 0) {
+      const confirmPrint = window.confirm(`The data for the fields: ${mismatchFields.join(', ')} are different. Do you still want to print the PDF?`);
+      if (!confirmPrint) return;
+    } else {
+      uniformInfo = {
+        date: commonDateRaw,
+        party: commonParty,
+        for: commonFor,
+        eventDate: commonEventDateRaw
+      };
+    }
+
+    // 2. Identify visible columns (Strictly honors UI toggles)
     const columnsToInclude = columnConfig.filter(col => 
-      visibleColumns[col.key] !== false && col.key !== 'actions' && col.key !== 'image'
+      visibleColumns[col.key] !== false && col.key !== 'actions'
     );
 
-    const headers = columnsToInclude.map(col => col.label);
-    const body = filteredReportData.map(row => 
-      columnsToInclude.map(col => {
+    const reportColumns = columnsToInclude.map(col => ({ header: col.label, dataKey: col.key }));
+    
+    const body = filteredReportData.map(row => {
+      const rowData = {};
+      columnsToInclude.forEach(col => {
         let val = row[col.index];
-        if (['date', 'eventDate', 'returnDate'].includes(col.key)) return formatDate(val);
-        if (['estimatedCost', 'totalCost'].includes(col.key)) return `Rs ${parseFloat(val || 0).toFixed(2)}`;
-        return val || '-';
-      })
-    );
+        if (col.key === 'image') {
+          rowData[col.key] = val && val !== 'No Image' ? val : '';
+        } else if (['date', 'eventDate', 'returnDate'].includes(col.key)) {
+          rowData[col.key] = formatDate(val);
+        } else if (['estimatedCost', 'totalCost'].includes(col.key)) {
+          rowData[col.key] = `Rs ${parseFloat(val || 0).toFixed(2)}`;
+        } else {
+          rowData[col.key] = val || '-';
+        }
+      });
+      return rowData;
+    });
 
-    // 3. Generate PDF - Portrait Layout (A4)
-    const doc = new jsPDF('p', 'mm', 'a4');
-    const pageWidth = doc.internal.pageSize.width;
-    
-    // Add Title
-    doc.setFontSize(22);
-    doc.setTextColor(124, 58, 237); // violet-600
-    doc.text(`${isIssued ? 'ISSUED' : 'RETURN'} HISTORY REPORT`, 14, 15);
-    
-    // Top-right alignment for "Generated on"
-    doc.setFontSize(9);
-    doc.text(`Generated on: ${new Date().toLocaleString()}`, pageWidth - 14, 15, { align: 'right' });
+    // Helper to fetch base64 through GAS backend
+    const loadImageAsBase64 = async (url) => {
+      if (!url || url === 'No Image') return null;
+      try {
+        const fileId = extractDriveFileId(url);
+        if (!fileId) return null;
+        const res = await fetch(`${scriptUrl}?action=getImageBase64&fileId=${fileId}&spreadsheetId=${spreadsheetId}`);
+        const result = await res.json();
+        return result.success ? result.base64 : null;
+      } catch { return null; }
+    };
 
+    // 3. Generate PDF
     setIsReportGenerating(true);
 
-    // Use a small timeout to allow UI to update (spinner to show) before heavy sync PDF construction
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageWidth = doc.internal.pageSize.width;
+
+        // Calculate dynamic column styles for precise widths
+        const colStyles = {};
+        const availableWidth = pageWidth - 12; // margins
+        const colCount = reportColumns.length;
+        const hasImage = reportColumns.some(c => c.dataKey === 'image');
+        const imgWeight = 1.4;
+        const otherWeight = 1.0;
+        const totalWeight = hasImage ? (colCount - 1) * otherWeight + imgWeight : colCount * otherWeight;
+        const unitWidth = availableWidth / totalWeight;
+
+        reportColumns.forEach(col => {
+          colStyles[col.dataKey] = { 
+            cellWidth: col.dataKey === 'image' ? unitWidth * imgWeight : unitWidth * otherWeight 
+          };
+        });
+
+        // Pre-load images if column is visible
+        const imageMap = {};
+        if (visibleColumns.image) {
+          const uniqueUrls = [...new Set(filteredReportData.map(row => row[isIssued ? 15 : 18]).filter(url => url && url !== 'No Image'))];
+          const results = await Promise.all(uniqueUrls.map(async (url) => ({ url, b64: await loadImageAsBase64(url) })));
+          results.forEach(({ url, b64 }) => { if (b64) imageMap[url] = b64; });
+        }
+        
+        // Add Title with Record Count
+        const title = `${isIssued ? 'ISSUED' : 'RETURN'} HISTORY REPORT`;
+        const countText = `(${body.length})`;
+        doc.setFontSize(14);
+        doc.setTextColor(124, 58, 237);
+        doc.text(title, 14, 10);
+        
+        const titleWidth = doc.getTextWidth(title);
+        doc.setFontSize(9);
+        doc.setTextColor(150, 150, 150);
+        doc.text(countText, 14 + titleWidth + 2, 10);
+
+        doc.setFontSize(7);
+        doc.setTextColor(100, 100, 100);
+        doc.text(`Generated on: ${new Date().toLocaleString()}`, pageWidth - 14, 10, { align: 'right' });
+
+        // Add Summary Info Header (Single Line)
+        let currentY = 14;
+        if (uniformInfo) {
+          doc.setFontSize(8);
+          doc.setTextColor(60, 60, 60);
+          doc.setFont(undefined, 'bold');
+          
+          const headerText = `Party: ${uniformInfo.party}    Date: ${formatDate(uniformInfo.date)}    For: ${uniformInfo.for}${uniformInfo.eventDate ? `    Event-Date: ${formatDate(uniformInfo.eventDate)}` : ''}`;
+          doc.text(headerText, 14, 16);
+          currentY = 22; 
+        }
+
         autoTable(doc, {
-          startY: 22,
-          head: [headers],
+          startY: currentY,
+          columns: reportColumns,
           body: body,
           theme: 'grid',
-          headStyles: { fillColor: [124, 58, 237], textColor: 255, fontStyle: 'bold', halign: 'center' },
-          styles: { fontSize: 8, cellPadding: 3, halign: 'center', overflow: 'linebreak' },
+          columnStyles: colStyles,
+          headStyles: { 
+            fillColor: [109, 40, 217], 
+            textColor: 255, 
+            fontSize: 7, 
+            fontStyle: 'bold', 
+            halign: 'center',
+            cellPadding: 2
+          },
+          styles: { 
+            fontSize: 6, 
+            cellPadding: 1.5, 
+            halign: 'center',
+            valign: 'middle',
+            overflow: 'ellipsize',
+            minCellHeight: 11.5
+          },
           alternateRowStyles: { fillColor: [249, 250, 251] },
-          margin: { top: 35 },
-          didDrawPage: (data) => {
-            const str = `Page ${doc.internal.getNumberOfPages()}`;
+          rowPageBreak: 'avoid',
+          margin: { top: 14, right: 6, bottom: 10, left: 6 },
+          // willDrawCell fires BEFORE text is painted — use it to blank out the raw URL text
+          willDrawCell: (data) => {
+            if (data.column.dataKey === 'image' && data.cell.section === 'body') {
+              data.cell.text = [];
+            }
+          },
+          // didDrawCell fires AFTER the cell background is drawn — overlay the image here
+          didDrawCell: (data) => {
+            if (data.column.dataKey === 'image' && data.cell.section === 'body') {
+              const url = data.cell.raw;
+              const b64 = imageMap[url];
+              if (b64) {
+                const padding = 1;
+                const imgSize = Math.min(data.cell.width - padding * 2, data.cell.height - padding * 2, 8);
+                const x = data.cell.x + (data.cell.width - imgSize) / 2;
+                const y = data.cell.y + (data.cell.height - imgSize) / 2;
+                try {
+                  doc.addImage(b64, 'JPEG', x, y, imgSize, imgSize);
+                } catch (e) {
+                  console.warn('Failed to add image to PDF:', e);
+                }
+              }
+            }
+          },
+          didDrawPage: function (data) {
+            const pageNumber = doc.internal.getCurrentPageInfo().pageNumber;
             doc.setFontSize(8);
-            doc.setTextColor(150);
-            doc.text(str, doc.internal.pageSize.width - 25, doc.internal.pageSize.height - 10);
+            doc.setTextColor(120);
+            doc.text(
+              `${isIssued ? 'Issued History Report' : 'Return History Report'}`,
+              6,
+              doc.internal.pageSize.height - 8
+            );
+            doc.text(
+              `Page ${pageNumber} of {total_pages_count_string}`,
+              doc.internal.pageSize.width - 6,
+              doc.internal.pageSize.height - 8,
+              { align: 'right' }
+            );
           }
         });
+
+        if (typeof doc.putTotalPages === 'function') {
+          doc.putTotalPages('{total_pages_count_string}');
+        }
 
         doc.save(`${isIssued ? 'Issued' : 'Return'}_History_${new Date().toISOString().split('T')[0]}.pdf`);
         showToast('Report generated successfully');
@@ -924,9 +1087,9 @@ const Inventory = () => {
                 <div className="flex items-center gap-1.5 p-1 bg-slate-50 rounded-2xl border border-slate-100">
                   {activeTab === 'issued' ? (
                     <>
-                      <select value={issuedFilterDept} onChange={(e) => setIssuedFilterDept(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
+                      <select value={issuedFilterParty} onChange={(e) => setIssuedFilterParty(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
                         <option value="">All Party</option>
-                        {issuedOptions.depts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        {issuedOptions.parties.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                       </select>
                       <select value={issuedFilterItem} onChange={(e) => setIssuedFilterItem(e.target.value)} className="h-8 pl-2 pr-8 bg-white border border-slate-200/60 rounded-xl text-[10px] font-bold text-slate-600 appearance-none min-w-[90px] hover:border-fuchsia-200 transition-all cursor-pointer" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d946ef' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m19.5 8.25-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}>
                         <option value="">All Items</option>
@@ -1013,10 +1176,10 @@ const Inventory = () => {
                     )}
                   </div>
 
-                  {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterDept || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
+                  {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterParty || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
                     <button
                       onClick={() => {
-                        if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterDept(""); setIssuedStartDate(""); setIssuedEndDate(""); } 
+                        if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterParty(""); setIssuedStartDate(""); setIssuedEndDate(""); } 
                         else { setReturnFilterItem(""); setReturnFilterType(""); setReturnFilterParty(""); setReturnStartDate(""); setReturnEndDate(""); }
                         setSearchTerm("");
                       }}
@@ -1108,7 +1271,21 @@ const Inventory = () => {
                             ) : col.key === 'image' ? (
                               currentData[col.index] && currentData[col.index] !== 'No Image' ? (
                                 <div className="relative flex justify-center group/img">
-                                  <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform"><img src={getDisplayableImageUrl(currentData[col.index])} alt="Item" className="h-full w-full object-cover" /></a>
+                                  <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform">
+                                    <img 
+                                      src={getDisplayableImageUrl(currentData[col.index])} 
+                                      alt="Item" 
+                                      className="h-full w-full object-cover" 
+                                      onError={(e) => {
+                                        const id = extractDriveFileId(currentData[col.index]);
+                                        if (id && !e.target.dataset.retried) {
+                                          e.target.dataset.retried = '1';
+                                          // Try the lh3 CDN as a second attempt
+                                          e.target.src = `https://lh3.googleusercontent.com/d/${id}`;
+                                        }
+                                      }}
+                                    />
+                                  </a>
                                 </div>
                               ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
                             ) : currentData[col.index] || '-'}
