@@ -117,30 +117,30 @@ const Inventory = () => {
   });
 
   const columnConfig = activeTab === 'issued' ? [
-    { key: 'date', label: 'Date', index: 0 },
     { key: 'serial', label: 'Serial No.', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'qty', label: 'Issue Qty', index: 8 },
+    { key: 'image', label: 'Image', index: 15 },
+    { key: 'date', label: 'Date', index: 0 },
     { key: 'for', label: 'For', index: 19 },
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'eventDate', label: 'Event Date', index: 7 },
     { key: 'eventType', label: 'Event Type', index: 17 },
-    { key: 'estimatedCost', label: 'Estimated Cost', index: 18 },
-    { key: 'qty', label: 'Issue Qty', index: 8 },
-    { key: 'image', label: 'Image', index: 15 }
+    { key: 'estimatedCost', label: 'Estimated Cost', index: 18 }
   ] : [
-    { key: 'date', label: 'Date', index: 0 },
     { key: 'serial', label: 'Serial No.', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
+    { key: 'qty', label: 'Return Qty', index: 10 },
+    { key: 'image', label: 'Image', index: 18 },
+    { key: 'date', label: 'Date', index: 0 },
     { key: 'for', label: 'For', index: 21 },
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'returnDate', label: 'Return Date', index: 8 },
-    { key: 'qty', label: 'Return Qty', index: 10 },
     { key: 'damage', label: 'Damage', index: 11 },
     { key: 'missing', label: 'Missing', index: 12 },
-    { key: 'totalCost', label: 'Total Cost', index: 20 },
-    { key: 'image', label: 'Image', index: 18 }
+    { key: 'totalCost', label: 'Total Cost', index: 20 }
   ];
 
   useEffect(() => {
@@ -837,7 +837,10 @@ const Inventory = () => {
       visibleColumns[col.key] !== false && col.key !== 'actions'
     );
 
-    const reportColumns = columnsToInclude.map(col => ({ header: col.label, dataKey: col.key }));
+    const reportColumns = [
+      ...columnsToInclude.map(col => ({ header: col.label, dataKey: col.key })),
+      { header: 'Remark', dataKey: 'remark' }
+    ];
     
     const body = filteredReportData.map(row => {
       const rowData = {};
@@ -853,6 +856,7 @@ const Inventory = () => {
           rowData[col.key] = val || '-';
         }
       });
+      rowData['remark'] = '';
       return rowData;
     });
 
@@ -923,9 +927,11 @@ const Inventory = () => {
           doc.setTextColor(60, 60, 60);
           doc.setFont(undefined, 'bold');
           
-          const headerText = `Party: ${uniformInfo.party}    Date: ${formatDate(uniformInfo.date)}    For: ${uniformInfo.for}${uniformInfo.eventDate ? `    Event-Date: ${formatDate(uniformInfo.eventDate)}` : ''}`;
-          doc.text(headerText, 14, 16);
-          currentY = 22; 
+          const row1 = `Date: ${formatDate(uniformInfo.date)}    For: ${uniformInfo.for}`;
+          const row2 = `Party: ${uniformInfo.party}${uniformInfo.eventDate ? `    Event-Date: ${formatDate(uniformInfo.eventDate)}` : ''}`;
+          doc.text(row1, 14, 16);
+          doc.text(row2, 14, 21);
+          currentY = 28; 
         }
 
         autoTable(doc, {
@@ -952,7 +958,7 @@ const Inventory = () => {
           },
           alternateRowStyles: { fillColor: [249, 250, 251] },
           rowPageBreak: 'avoid',
-          margin: { top: 14, right: 6, bottom: 10, left: 6 },
+          margin: { top: 14, right: 6, bottom: 20, left: 6 },
           // willDrawCell fires BEFORE text is painted — use it to blank out the raw URL text
           willDrawCell: (data) => {
             if (data.column.dataKey === 'image' && data.cell.section === 'body') {
@@ -981,11 +987,6 @@ const Inventory = () => {
             const pageNumber = doc.internal.getCurrentPageInfo().pageNumber;
             doc.setFontSize(8);
             doc.setTextColor(120);
-            doc.text(
-              `${isIssued ? 'Issued History Report' : 'Return History Report'}`,
-              6,
-              doc.internal.pageSize.height - 8
-            );
             doc.text(
               `Page ${pageNumber} of {total_pages_count_string}`,
               doc.internal.pageSize.width - 6,
