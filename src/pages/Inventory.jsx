@@ -84,7 +84,7 @@ const Inventory = () => {
 
   // Form States
   const [issueForm, setIssueForm] = useState({
-    forType: 'Rent', issuer: '', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: ''
+    forType: 'Rent', issuer: '', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: ''
   });
 
   const [returnForm, setReturnForm] = useState({
@@ -114,11 +114,12 @@ const Inventory = () => {
     missing: true,
     totalCost: true,
     image: true,
-    for: true
+    for: true,
+    dishes: true
   });
 
   const columnConfig = activeTab === 'issued' ? [
-    { key: 'serial', label: 'Serial No.', index: 1 },
+    { key: 'serial', label: 'Serial', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
     { key: 'qty', label: 'Issue Qty', index: 8 },
@@ -128,9 +129,10 @@ const Inventory = () => {
     { key: 'party', label: 'Party Name', index: 6 },
     { key: 'eventDate', label: 'Event Date', index: 7 },
     { key: 'eventType', label: 'Event Type', index: 17 },
-    { key: 'estimatedCost', label: 'Estimated Cost', index: 18 }
+    { key: 'estimatedCost', label: 'Estimated Cost', index: 18 },
+    { key: 'dishes', label: 'Dishes', index: 21 }
   ] : [
-    { key: 'serial', label: 'Serial No.', index: 1 },
+    { key: 'serial', label: 'Serial', index: 1 },
     { key: 'type', label: 'Type', index: 3 },
     { key: 'item', label: 'Item Name', index: 5 },
     { key: 'qty', label: 'Return Qty', index: 10 },
@@ -295,9 +297,9 @@ const Inventory = () => {
         newRow[0] = formatDateTime(newRow[0]);
         if (activeTab === 'issued') {
           if (newRow[7]) newRow[7] = formatDate(newRow[7]);
-          // Clear Column V for Issued sheet
+          // Preserve Column V for Issued sheet (Dishes)
           while (newRow.length < 22) newRow.push("");
-          newRow[21] = "";
+          // newRow[21] is preserved from editDataMap or original row
         } else if (activeTab === 'return') {
           if (newRow[8]) newRow[8] = formatDate(newRow[8]);
           // Also format eventDate (index 7) in return sheet if it exists
@@ -605,7 +607,7 @@ const Inventory = () => {
       const opening = parseFloat(issueForm.openingBalance) || 0;
       const consumed = parseFloat(issueForm.issueData) || 0;
       const closing = opening - consumed;
-      const rowData = [localTimestamp, '', issueForm.inventoryNo, cleanText(issueForm.inventoryType), cleanText(issueForm.department), cleanText(issueForm.itemsName), cleanText(issueForm.partyName) || '', issueForm.eventDate || '', issueForm.issueData || 0, cleanText(issueForm.unit) || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, cleanText(issueForm.foodName) || '', imageUrl, cleanText(issueForm.remarks) || '', cleanText(issueForm.eventTime) || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), cleanText(issueForm.forType) || 'Rent', cleanText(issueForm.issuer) || '', ''];
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, cleanText(issueForm.inventoryType), cleanText(issueForm.department), cleanText(issueForm.itemsName), cleanText(issueForm.partyName) || '', issueForm.eventDate || '', issueForm.issueData || 0, cleanText(issueForm.unit) || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, cleanText(issueForm.foodName) || '', imageUrl, cleanText(issueForm.remarks) || '', cleanText(issueForm.eventTime) || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), cleanText(issueForm.forType) || 'Rent', cleanText(issueForm.issuer) || '', cleanText(issueForm.dishes) || ''];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -615,7 +617,7 @@ const Inventory = () => {
       if (result.success) {
         showToast('Issue recorded successfully');
         setIsIssueModalOpen(false);
-        setIssueForm({ forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', remarks: '', imageUrl: '' });
+        setIssueForm({ forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: '' });
         setSelectedImage(null); setImagePreview(null); fetchHistory();
       } else throw new Error(result.error);
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
@@ -842,12 +844,13 @@ const Inventory = () => {
     );
 
     const reportColumns = [
+      { header: 'S.No.', dataKey: 'sNo' },
       ...columnsToInclude.map(col => ({ header: col.label, dataKey: col.key })),
       { header: 'Remark', dataKey: 'remark' }
     ];
     
-    const body = filteredReportData.map(row => {
-      const rowData = {};
+    const body = filteredReportData.map((row, index) => {
+      const rowData = { sNo: index + 1 };
       columnsToInclude.forEach(col => {
         let val = row[col.index];
         if (col.key === 'image') {
@@ -1305,7 +1308,7 @@ const Inventory = () => {
           </div>
         </div>
 
-        {/* MODALS (Preserved as is but with small bug fixes found during review) */}
+        {/* MODALS */}
         {(isIssueModalOpen || isReturnModalOpen) && (
           <div className="fixed inset-0 z-[150] flex items-center justify-center p-6 backdrop-blur-sm bg-slate-900/40 animate-in fade-in duration-300">
             <div className="relative w-full max-w-4xl bg-white rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
@@ -1320,6 +1323,7 @@ const Inventory = () => {
               </div>
 
               <form onSubmit={isIssueModalOpen ? handleIssueSubmit : handleReturnSubmit} className="px-7 py-5 space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar font-sans">
+
                 {isIssueModalOpen && (
                   <div className="grid grid-cols-4 gap-4">
                     <div className="space-y-1">
@@ -1478,19 +1482,26 @@ const Inventory = () => {
                         className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
                       >
                         <option value="">Select item</option>
-                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty).map(r => r[5]).filter(Boolean))].sort().map(i => <option key={i} value={i}>{i}</option>)}
+                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty).map(r => r[5]).filter(Boolean))]
+                          .filter(itemName => !returnHistory.some(ret => 
+                            ret[5] === itemName && 
+                            ret[6] === modalFilterParty && 
+                            toInputDate(ret[7]) === modalFilterDate
+                          ))
+                          .sort()
+                          .map(i => <option key={i} value={i}>{i}</option>)}
                       </select>
                     </div>
                   </div>
                 )}
 
                 {isIssueModalOpen ? (
-                  <div className="grid grid-cols-3 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
+                  <div className="grid grid-cols-4 gap-4 p-4 bg-slate-50 border border-slate-100 rounded-xl shadow-sm">
                     {[
                       { label: 'Department', val: issueForm.department },
                       { label: 'Inventory No', val: issueForm.inventoryNo },
                       { label: 'Opening Bal', val: (issueForm.openingBalance !== undefined && issueForm.openingBalance !== '') ? issueForm.openingBalance : '-' },
-                      { label: 'Last Issued (Date)', val: validationState.committed || '0' }
+                      { label: 'Last Issue', val: validationState.committed || '0' }
                     ].map((f, i) => (
                       <div key={i} className="space-y-1.5 flex-1 min-w-[22%]">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block ml-1">{f.label}</label>
@@ -1554,10 +1565,14 @@ const Inventory = () => {
                 {isIssueModalOpen && (
                   <div className="space-y-4">
                     {/* Row 1: Party Name, Event Date, Event Type */}
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-4 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
                         <input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Dishes</label>
+                        <input type="text" value={issueForm.dishes} onChange={(e) => setIssueForm(p => ({ ...p, dishes: e.target.value }))} placeholder="Dishes" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" />
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label>
@@ -1726,7 +1741,7 @@ const Inventory = () => {
                   <button type="button" onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
                   <button 
                     type="submit" 
-                    disabled={isSubmitting || (isIssueModalOpen && validationState.isOver)} 
+                    disabled={isSubmitting || (isIssueModalOpen && validationState.isOver) || (isReturnModalOpen && !returnForm.itemsName)} 
                     className={`min-w-[140px] px-10 py-2.5 rounded-xl text-white text-sm font-bold shadow-xl transition-all flex items-center justify-center gap-2 ${isIssueModalOpen ? 'bg-violet-600' : 'bg-fuchsia-600'} hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Processing...</span></> : (isIssueModalOpen ? 'Issue Items' : 'Return Items')}
