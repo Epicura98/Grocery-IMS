@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { formatDate, parseNumber } from "../utils/helpers";
+import { formatDate, parseNumber, normalizeForMatch } from "../utils/helpers";
 import { fetchSheetDataInBackground } from "../utils/api";
 import {
   TrendingUp,
@@ -193,11 +193,11 @@ export default function Dashboard() {
   // FACETED FILTERING HELPER FUNCTIONS
   const rowMatchesSearch = useCallback((item, term) => {
     if (!term.trim()) return true;
-    const s = term.toLowerCase();
-    return (item.inventoryNo?.toLowerCase() || "").includes(s) ||
-           (item.type?.toLowerCase() || "").includes(s) ||
-           (item.department?.toLowerCase() || "").includes(s) ||
-           (item.name?.toLowerCase() || "").includes(s);
+    const s = normalizeForMatch(term);
+    return normalizeForMatch(item.inventoryNo).includes(s) ||
+           normalizeForMatch(item.type).includes(s) ||
+           normalizeForMatch(item.department).includes(s) ||
+           normalizeForMatch(item.name).includes(s);
   }, []);
 
   const dateMatchesRange = useCallback((dateStr, start, end) => {

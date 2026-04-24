@@ -18,7 +18,7 @@ import {
   FileText
 } from 'lucide-react';
 import AdminLayout from '../components/layout/AdminLayout';
-import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber, formatIndianAmount, formatDateTime } from '../utils/helpers';
+import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber, formatIndianAmount, formatDateTime, cleanText, normalizeForMatch } from '../utils/helpers';
 import { fetchSheetDataInBackground } from '../utils/api';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -44,7 +44,8 @@ const Inventory = () => {
     inventoryTypeOptions: [],
     departmentOptions: [],
     unitOptions: [],
-    issuerOptions: []
+    issuerOptions: [],
+    eventTimeOptions: []
   });
   const [showIssuerDropdown, setShowIssuerDropdown] = useState(false);
   const issuerDropdownRef = useRef(null);
@@ -290,7 +291,7 @@ const Inventory = () => {
     setIsSubmitting(true);
     try {
       const rowsToUpdate = Object.values(editDataMap).map(row => {
-        const newRow = [...row];
+        const newRow = row.map(cell => typeof cell === 'string' ? cleanText(cell) : cell);
         newRow[0] = formatDateTime(newRow[0]);
         if (activeTab === 'issued') {
           if (newRow[7]) newRow[7] = formatDate(newRow[7]);
@@ -351,7 +352,8 @@ const Inventory = () => {
           inventoryTypeOptions: [...new Set(rows.map(row => row[3]).filter(Boolean))],
           departmentOptions: [...new Set(rows.map(row => row[2]).filter(Boolean))],
           unitOptions: [...new Set(rows.map(row => row[4]).filter(Boolean))],
-          issuerOptions: [...new Set(rows.map(row => row[7]).filter(Boolean))].sort()
+          issuerOptions: [...new Set(rows.map(row => row[7]).filter(Boolean))].sort(),
+          eventTimeOptions: [...new Set(rows.map(row => row[8]).filter(Boolean))]
         });
       }
       // Fetch Add-Stock to get stock-only options for Issue form
@@ -456,11 +458,12 @@ const Inventory = () => {
   }, [returnHistory, returnFilterItem, returnFilterType, returnFilterParty]);
 
   const filteredIssuedHistory = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     return issueHistory.filter(row => {
-      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && String(cell).toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
       const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
       const matchesType = !issuedFilterType || row[3] === issuedFilterType;
-      const matchesParty = !issuedFilterParty || row[6] === issuedFilterParty;
+      const matchesParty = !issuedFilterParty || normalizeForMatch(row[6]) === normalizeForMatch(issuedFilterParty);
       let matchesDate = true;
       if (issuedStartDate || issuedEndDate) {
         const rowDate = parseRowDate(row[0]);
@@ -477,11 +480,12 @@ const Inventory = () => {
   }, [issueHistory, searchTerm, issuedFilterItem, issuedFilterType, issuedFilterParty, issuedStartDate, issuedEndDate]);
 
   const filteredReturnHistory = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     return returnHistory.filter(row => {
-      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && String(cell).toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
       const matchesItem = !returnFilterItem || row[5] === returnFilterItem;
       const matchesType = !returnFilterType || row[3] === returnFilterType;
-      const matchesParty = !returnFilterParty || row[6] === returnFilterParty;
+      const matchesParty = !returnFilterParty || normalizeForMatch(row[6]) === normalizeForMatch(returnFilterParty);
       let matchesDate = true;
       if (returnStartDate || returnEndDate) {
         const rowDate = parseRowDate(row[0]);
@@ -509,25 +513,25 @@ const Inventory = () => {
   const validationState = useMemo(() => {
     if (!issueForm.itemsName || !issueForm.eventDate) return { remaining: 0, isOver: false, committed: 0 };
     
-    const selectedItem = issueForm.itemsName.trim().toLowerCase();
+    const selectedItem = normalizeForMatch(issueForm.itemsName);
     const selectedDate = issueForm.eventDate;
     const masterStock = Number(issueForm.openingBalance) || 0;
     const currentQty = Number(issueForm.issueData) || 0;
-    const currentParty = String(issueForm.partyName || '').trim().toLowerCase();
-    const currentVenue = String(issueForm.foodName || '').trim().toLowerCase();
-    const currentSlot = String(issueForm.eventTime || 'Regular').trim().toLowerCase();
+    const currentParty = normalizeForMatch(issueForm.partyName);
+    const currentVenue = normalizeForMatch(issueForm.foodName);
+    const currentSlot = normalizeForMatch(issueForm.eventTime || 'Regular');
     const currentKey = `${currentParty}|${currentVenue}`;
 
     // 1. Group existing issues by (Party | Venue) AND (Slot)
     const partyVenueMap = {}; 
     issueHistory.forEach(row => {
-      const rowItem = String(row[5] || '').trim().toLowerCase();
+      const rowItem = normalizeForMatch(row[5]);
       const rowDate = toInputDate(row[7]);
       
       if (rowItem === selectedItem && rowDate === selectedDate) {
-        const p = String(row[6] || '').trim().toLowerCase();
-        const v = String(row[14] || '').trim().toLowerCase();
-        const s = String(row[17] || 'Regular').trim().toLowerCase();
+        const p = normalizeForMatch(row[6]);
+        const v = normalizeForMatch(row[14]);
+        const s = normalizeForMatch(row[17] || 'Regular');
         const q = Number(row[8] || 0);
         
         const key = `${p}|${v}`;
@@ -601,7 +605,7 @@ const Inventory = () => {
       const opening = parseFloat(issueForm.openingBalance) || 0;
       const consumed = parseFloat(issueForm.issueData) || 0;
       const closing = opening - consumed;
-      const rowData = [localTimestamp, '', issueForm.inventoryNo, issueForm.inventoryType, issueForm.department, issueForm.itemsName, issueForm.partyName || '', issueForm.eventDate || '', issueForm.issueData || 0, issueForm.unit || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, issueForm.foodName || '', imageUrl, issueForm.remarks || '', issueForm.eventTime || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), issueForm.forType || 'Rent', issueForm.issuer || '', ''];
+      const rowData = [localTimestamp, '', issueForm.inventoryNo, cleanText(issueForm.inventoryType), cleanText(issueForm.department), cleanText(issueForm.itemsName), cleanText(issueForm.partyName) || '', issueForm.eventDate || '', issueForm.issueData || 0, cleanText(issueForm.unit) || '', issueForm.perUnit || 0, issueForm.openingBalance || 0, closing, closing, cleanText(issueForm.foodName) || '', imageUrl, cleanText(issueForm.remarks) || '', cleanText(issueForm.eventTime) || '', (Number(issueForm.issueData || 0) * Number(issueForm.perUnit || 0)).toFixed(2), cleanText(issueForm.forType) || 'Rent', cleanText(issueForm.issuer) || '', ''];
       const response = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -717,10 +721,10 @@ const Inventory = () => {
         isEditing ? originalTimestamp : localTimestamp, 
         isEditing ? editingSerialNo : "", 
         returnForm.inventoryNo, 
-        returnForm.inventoryType, 
-        returnForm.department, 
-        returnForm.itemsName, 
-        returnForm.partyName, 
+        cleanText(returnForm.inventoryType), 
+        cleanText(returnForm.department), 
+        cleanText(returnForm.itemsName), 
+        cleanText(returnForm.partyName), 
         toSheetDate(returnForm.eventDate), 
         toSheetDate(returnForm.returnDate), 
         returnForm.issueQty, 
@@ -733,9 +737,9 @@ const Inventory = () => {
         returnForm.closingBalance, 
         (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), 
         imageUrl, 
-        returnForm.remarks,
+        cleanText(returnForm.remarks),
         returnForm.totalCost,
-        returnForm.forType || ''
+        cleanText(returnForm.forType) || ''
       ];
       const rowData = isEditing ? [...baseRowData, '', ''] : baseRowData;
       const response = await fetch(scriptUrl, {
@@ -1563,11 +1567,9 @@ const Inventory = () => {
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Type *</label>
                         <select value={issueForm.eventTime} onChange={(e) => setIssueForm(p => ({ ...p, eventTime: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium bg-white outline-none">
                           <option value="">Select time</option>
-                          <option value="Breakfast">Breakfast</option>
-                          <option value="Brunch">Brunch</option>
-                          <option value="Lunch">Lunch</option>
-                          <option value="Hi-Tea">Hi-Tea</option>
-                          <option value="Dinner">Dinner</option>
+                          {dropdownOptions.eventTimeOptions.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
                         </select>
                       </div>
                     </div>

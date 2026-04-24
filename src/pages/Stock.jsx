@@ -31,7 +31,7 @@ import {
   Settings2
 } from "lucide-react";
 import AdminLayout from "../components/layout/AdminLayout";
-import { formatDate, compressImage, parseRowDate, formatIndianAmount, formatDateTime } from "../utils/helpers";
+import { formatDate, compressImage, parseRowDate, formatIndianAmount, formatDateTime, cleanText, normalizeForMatch } from "../utils/helpers";
 import { fetchSheetDataInBackground } from "../utils/api";
 
 export default function Stock() {
@@ -216,7 +216,7 @@ export default function Stock() {
     setIsSubmitting(true);
     try {
       const rowsToUpdate = Object.values(editDataMap).map(row => {
-        const newRow = [...row];
+        const newRow = row.map(cell => typeof cell === 'string' ? cleanText(cell) : cell);
         newRow[0] = formatDateTime(newRow[0]);
         return newRow;
       });
@@ -300,8 +300,9 @@ export default function Stock() {
   }, [activeTab, stockRows, rePurchaseRows]);
 
   const typeOptions = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     const filtered = historyToDisplay.filter(row => {
-      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
       const matchesDept = !filterDept || row[4] === filterDept;
       const matchesItem = !filterItem || row[5] === filterItem;
       return matchesSearch && matchesDept && matchesItem;
@@ -310,8 +311,9 @@ export default function Stock() {
   }, [historyToDisplay, searchTerm, filterDept, filterItem]);
 
   const deptOptions = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     const filtered = historyToDisplay.filter(row => {
-      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
       const matchesType = !filterType || row[3] === filterType;
       const matchesItem = !filterItem || row[5] === filterItem;
       return matchesSearch && matchesType && matchesItem;
@@ -320,8 +322,9 @@ export default function Stock() {
   }, [historyToDisplay, searchTerm, filterType, filterItem]);
 
   const itemOptions = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     const filtered = historyToDisplay.filter(row => {
-      const matchesSearch = !searchTerm.trim() || row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
       const matchesType = !filterType || row[3] === filterType;
       const matchesDept = !filterDept || row[4] === filterDept;
       return matchesSearch && matchesType && matchesDept;
@@ -330,9 +333,10 @@ export default function Stock() {
   }, [historyToDisplay, searchTerm, filterType, filterDept]);
 
   const filteredStockRows = useMemo(() => {
+    const s = normalizeForMatch(searchTerm);
     return historyToDisplay.filter(row => {
-      const matchesSearch = !searchTerm.trim() || 
-        row.some(cell => cell && cell.toString().toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesSearch = !s || 
+        row.some(cell => cell && normalizeForMatch(cell).includes(s));
         
       const matchesType = !filterType || row[3] === filterType;
       const matchesDept = !filterDept || row[4] === filterDept;
@@ -367,7 +371,8 @@ export default function Stock() {
 
   const isDuplicateItem = useMemo(() => {
     if (!form.itemsName.trim()) return false;
-    return stockRows.some(row => (row[5] || '').toLowerCase() === form.itemsName.trim().toLowerCase());
+    const normalizedNew = normalizeForMatch(form.itemsName);
+    return stockRows.some(row => normalizeForMatch(row[5]) === normalizedNew);
   }, [form.itemsName, stockRows]);
 
   useEffect(() => {
@@ -551,8 +556,8 @@ export default function Stock() {
       const timestamp = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
       const finalRowData = [
-        timestamp, '', inventoryNo, form.inventoryType, form.department, form.itemsName,
-        form.vendorName, form.openingBalance || 0, form.unit, form.perUnit || 0, imageUrl, form.remarks,
+        timestamp, '', inventoryNo, cleanText(form.inventoryType), cleanText(form.department), cleanText(form.itemsName),
+        cleanText(form.vendorName), form.openingBalance || 0, cleanText(form.unit), form.perUnit || 0, imageUrl, cleanText(form.remarks),
         (Number(form.openingBalance || 0) * Number(form.perUnit || 0)).toFixed(2),
         '', '', '', '', '', '', '', '', ''
       ];
@@ -598,8 +603,8 @@ export default function Stock() {
       const timestamp = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
       const finalRowData = [
-        timestamp, '', purchaseForm.inventoryNo, purchaseForm.inventoryType, purchaseForm.department, purchaseForm.itemsName,
-        purchaseForm.vendorName, purchaseForm.openingBalance || 0, purchaseForm.unit, purchaseForm.perUnit || 0, finalImageUrl, purchaseForm.remarks,
+        timestamp, '', purchaseForm.inventoryNo, cleanText(purchaseForm.inventoryType), cleanText(purchaseForm.department), cleanText(purchaseForm.itemsName),
+        cleanText(purchaseForm.vendorName), purchaseForm.openingBalance || 0, cleanText(purchaseForm.unit), purchaseForm.perUnit || 0, finalImageUrl, cleanText(purchaseForm.remarks),
         (Number(purchaseForm.openingBalance || 0) * Number(purchaseForm.perUnit || 0)).toFixed(2),
         '', '', '', '', '', '', '', '', ''
       ];

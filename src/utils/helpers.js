@@ -171,3 +171,20 @@ export const formatIndianAmount = (num) => {
   if (val >= 1000) return (num / 1000).toFixed(2) + " k";
   return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
+
+/**
+ * Trims leading/trailing spaces and collapses internal multiple spaces into one.
+ * e.g., "   hello    world   " -> "hello world"
+ */
+export const cleanText = (val) => {
+  if (typeof val !== 'string') return val;
+  return val.trim().replace(/\s+/g, ' ');
+};
+
+/**
+ * Normalizes a string for loose comparison (lowercase and no spaces).
+ */
+export const normalizeForMatch = (val) => {
+  if (!val) return '';
+  return String(val).toLowerCase().replace(/\s+/g, '');
+};
