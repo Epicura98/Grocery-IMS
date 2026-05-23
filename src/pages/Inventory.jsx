@@ -49,6 +49,9 @@ const Inventory = () => {
   });
   const [showIssuerDropdown, setShowIssuerDropdown] = useState(false);
   const issuerDropdownRef = useRef(null);
+  const [showPartyDropdown, setShowPartyDropdown] = useState(false);
+  const partyDropdownRef = useRef(null);
+  const [expandedParties, setExpandedParties] = useState(new Set());
   const [masterData, setMasterData] = useState([]);
   const [stockRows, setStockRows] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
@@ -82,9 +85,29 @@ const Inventory = () => {
   const folderId = import.meta.env.VITE_INVENTORY_FOLDER_ID;
   const spreadsheetId = import.meta.env.VITE_SHEET_ID;
 
+  const uniquePartyOptions = useMemo(() => {
+    return [...new Set(issueHistory.map(row => row[6]).filter(Boolean))].sort();
+  }, [issueHistory]);
+
+  const handleSelectParty = (selectedParty) => {
+    const latestRecord = issueHistory.find(row => row[6] === selectedParty);
+    if (latestRecord) {
+      setIssueForm(p => ({
+        ...p,
+        partyName: selectedParty,
+        eventDate: toInputDate(latestRecord[7]),
+        foodName: latestRecord[14] || '',
+        eventTime: latestRecord[17] || ''
+      }));
+    } else {
+      setIssueForm(p => ({ ...p, partyName: selectedParty }));
+    }
+    setShowPartyDropdown(false);
+  };
+
   // Form States
   const [issueForm, setIssueForm] = useState({
-    forType: 'Rent', issuer: '', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: ''
+    forType: 'H3', issuer: '', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: ''
   });
 
   const [returnForm, setReturnForm] = useState({
@@ -150,6 +173,9 @@ const Inventory = () => {
     function handleClickOutside(event) {
       if (issuerDropdownRef.current && !issuerDropdownRef.current.contains(event.target)) {
         setShowIssuerDropdown(false);
+      }
+      if (partyDropdownRef.current && !partyDropdownRef.current.contains(event.target)) {
+        setShowPartyDropdown(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -481,6 +507,33 @@ const Inventory = () => {
     });
   }, [issueHistory, searchTerm, issuedFilterItem, issuedFilterType, issuedFilterParty, issuedStartDate, issuedEndDate]);
 
+  const shouldGroup = activeTab === 'issued' && !(issuedFilterItem || issuedFilterType || issuedFilterParty || issuedStartDate || issuedEndDate || searchTerm);
+
+  const groupedIssuedData = useMemo(() => {
+    if (!shouldGroup) return [];
+    const groups = {};
+    issueHistory.forEach(row => {
+      const party = row[6] || 'Unknown';
+      if (!groups[party]) {
+        groups[party] = [];
+      }
+      groups[party].push(row);
+    });
+    return Object.entries(groups).map(([party, rows]) => {
+      const latestRow = rows[0];
+      const latestDate = latestRow ? latestRow[7] : '';
+      const totalQty = rows.reduce((sum, r) => sum + parseNumber(r[8]), 0);
+      const totalCost = rows.reduce((sum, r) => sum + parseNumber(r[18]), 0);
+      return {
+        partyName: party,
+        latestDate,
+        totalQty,
+        totalCost,
+        rows
+      };
+    });
+  }, [issueHistory, shouldGroup]);
+
   const filteredReturnHistory = useMemo(() => {
     const s = normalizeForMatch(searchTerm);
     return returnHistory.filter(row => {
@@ -617,7 +670,7 @@ const Inventory = () => {
       if (result.success) {
         showToast('Issue recorded successfully');
         setIsIssueModalOpen(false);
-        setIssueForm({ forType: 'Rent', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: '' });
+        setIssueForm({ forType: 'H3', inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', perUnit: '', unit: '', eventDate: '', partyName: '', eventTime: '', foodName: '', issueData: '', dishes: '', remarks: '', imageUrl: '' });
         setSelectedImage(null); setImagePreview(null); fetchHistory();
       } else throw new Error(result.error);
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
@@ -1242,6 +1295,116 @@ const Inventory = () => {
                   <tr><td colSpan={columnConfig.length + 1} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
                 ) : getFilteredHistory().length === 0 ? (
                   <tr><td colSpan={columnConfig.length + 1} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
+                ) : shouldGroup ? (
+                  groupedIssuedData.map((group, gIdx) => {
+                    const isExpanded = expandedParties.has(group.partyName);
+                    const activeColsCount = columnConfig.filter(col => visibleColumns[col.key] !== false).length;
+                    const totalColsCount = activeColsCount + 1;
+
+                    const togglePartyExpand = (pName) => {
+                      const newExpanded = new Set(expandedParties);
+                      if (newExpanded.has(pName)) {
+                        newExpanded.delete(pName);
+                      } else {
+                        newExpanded.add(pName);
+                      }
+                      setExpandedParties(newExpanded);
+                    };
+
+                    return (
+                      <React.Fragment key={`group-${gIdx}`}>
+                        {/* Group Header Row */}
+                        <tr 
+                          onClick={() => togglePartyExpand(group.partyName)}
+                          className="cursor-pointer bg-slate-50 hover:bg-slate-100/80 transition-colors border-b border-slate-150"
+                        >
+                          <td colSpan={totalColsCount} className="px-6 py-3.5 text-left select-none">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <span className="text-slate-400">
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 text-violet-600" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4 -rotate-90 transition-transform text-slate-400" />
+                                  )}
+                                </span>
+                                <span className="font-bold text-slate-800 text-sm">
+                                  {group.partyName}
+                                </span>
+                                <span className="px-2.5 py-0.5 text-[10px] font-black bg-violet-100 text-violet-700 rounded-full uppercase tracking-wider">
+                                  {group.rows.length} {group.rows.length === 1 ? 'entry' : 'entries'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-6 text-xs text-slate-500 font-semibold pr-4">
+                                <span>Latest Event Date: <strong className="text-slate-700">{formatDate(group.latestDate)}</strong></span>
+                                <span>Total Qty: <strong className="text-slate-700">{group.totalQty}</strong></span>
+                                <span>Total Cost: <strong className="text-emerald-600">₹{group.totalCost.toFixed(2)}</strong></span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                        {/* Group Child Rows (only rendered when expanded) */}
+                        {isExpanded && group.rows.map((row, idx) => {
+                          const sn = row[1];
+                          const isSelected = selectedSerials.has(sn);
+                          const currentData = editDataMap[sn] || row;
+
+                          return (
+                            <tr key={`${group.partyName}-${idx}`} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'bg-slate-50/10 hover:bg-slate-50/30'}`}>
+                              <td className="px-4 py-3 text-center pl-8">
+                                <input 
+                                  type="checkbox" 
+                                  className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                                  checked={isSelected}
+                                  onChange={() => toggleRowSelection(row)}
+                                />
+                              </td>
+                              {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                                <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
+                                  {isSelected && activeTab === 'issued' && col.key === 'qty' ? (
+                                    <input type="number" value={currentData[8]} onChange={(e) => handleInlineEdit(sn, 8, e.target.value, 'issued')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                  ) : isSelected && activeTab === 'return' && col.key === 'qty' ? (
+                                    <input type="number" value={currentData[10]} onChange={(e) => handleInlineEdit(sn, 10, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                  ) : isSelected && activeTab === 'return' && col.key === 'damage' ? (
+                                    <input type="number" value={currentData[11]} onChange={(e) => handleInlineEdit(sn, 11, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                  ) : isSelected && activeTab === 'return' && col.key === 'missing' ? (
+                                    <input type="number" value={currentData[12]} onChange={(e) => handleInlineEdit(sn, 12, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                  ) : col.key === 'actions' ? (
+                                    <button onClick={() => handleEditReturn(currentData)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
+                                  ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
+                                    <span className="text-slate-400 whitespace-nowrap">{formatDate(currentData[col.index])}</span>
+                                  ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{currentData[col.index]}</span>
+                                  ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{currentData[col.index]}</span>
+                                  ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{currentData[col.index]}</span>
+                                  ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
+                                  ) : col.key === 'image' ? (
+                                    currentData[col.index] && currentData[col.index] !== 'No Image' ? (
+                                      <div className="relative flex justify-center group/img">
+                                        <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform">
+                                          <img 
+                                            src={getDisplayableImageUrl(currentData[col.index])} 
+                                            alt="Item" 
+                                            className="h-full w-full object-cover" 
+                                            onError={(e) => {
+                                              const id = extractDriveFileId(currentData[col.index]);
+                                              if (id && !e.target.dataset.retried) {
+                                                e.target.dataset.retried = '1';
+                                                e.target.src = `https://lh3.googleusercontent.com/d/${id}`;
+                                              }
+                                            }}
+                                          />
+                                        </a>
+                                      </div>
+                                    ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
+                                  ) : currentData[col.index] || '-'}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })
                 ) : (
                   getFilteredHistory().map((row, idx) => {
                     const sn = row[1];
@@ -1288,7 +1451,6 @@ const Inventory = () => {
                                         const id = extractDriveFileId(currentData[col.index]);
                                         if (id && !e.target.dataset.retried) {
                                           e.target.dataset.retried = '1';
-                                          // Try the lh3 CDN as a second attempt
                                           e.target.src = `https://lh3.googleusercontent.com/d/${id}`;
                                         }
                                       }}
@@ -1566,9 +1728,49 @@ const Inventory = () => {
                   <div className="space-y-4">
                     {/* Row 1: Party Name, Event Date, Event Type */}
                     <div className="grid grid-cols-4 gap-4">
-                      <div className="space-y-1">
+                      <div className="space-y-1 relative" ref={partyDropdownRef}>
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
-                        <input type="text" value={issueForm.partyName} onChange={(e) => setIssueForm(p => ({ ...p, partyName: e.target.value }))} required placeholder="Party name" className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" />
+                        <div className="relative">
+                          <input 
+                            type="text" 
+                            value={issueForm.partyName} 
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setIssueForm(p => ({ ...p, partyName: val }));
+                              setShowPartyDropdown(true);
+                            }}
+                            onFocus={() => setShowPartyDropdown(true)}
+                            required 
+                            placeholder="Type or select..." 
+                            className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white" 
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => setShowPartyDropdown(!showPartyDropdown)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors"
+                          >
+                            <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showPartyDropdown ? 'rotate-180' : ''}`} />
+                          </button>
+                        </div>
+                        {showPartyDropdown && (
+                          <div className="absolute z-[160] w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-200">
+                            {uniquePartyOptions
+                              .filter(opt => !issueForm.partyName || opt.toLowerCase().includes(issueForm.partyName.toLowerCase()))
+                              .map((opt, idx) => (
+                                <button
+                                  key={idx}
+                                  type="button"
+                                  onClick={() => handleSelectParty(opt)}
+                                  className="w-full px-4 py-2.5 text-left text-sm font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-600 transition-colors border-b border-slate-50 last:border-0"
+                                >
+                                  {opt}
+                                </button>
+                              ))}
+                            {uniquePartyOptions.filter(opt => !issueForm.partyName || opt.toLowerCase().includes(issueForm.partyName.toLowerCase())).length === 0 && (
+                              <div className="px-4 py-3 text-xs font-bold text-slate-400 italic text-center">No matching parties</div>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Dishes</label>
