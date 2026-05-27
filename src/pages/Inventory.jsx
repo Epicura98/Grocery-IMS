@@ -12,12 +12,15 @@ import {
   Calendar,
   Zap,
   CheckCircle2,
+  Trash2,
+  ArrowLeft,
   ArrowLeftRight,
   ClipboardList,
   UploadCloud,
   FileText
 } from 'lucide-react';
 import AdminLayout from '../components/layout/AdminLayout';
+import PartyCard from '../components/layout/PartyCard';
 import { formatDate, toInputDate, compressImage, parseRowDate, parseNumber, formatIndianAmount, formatDateTime, cleanText, normalizeForMatch } from '../utils/helpers';
 import { fetchSheetDataInBackground } from '../utils/api';
 import jsPDF from 'jspdf';
@@ -25,8 +28,7 @@ import autoTable from 'jspdf-autotable';
 
 const Inventory = () => {
   const [activeTab, setActiveTab] = useState('issued'); // 'issued' or 'return'
-  const [isLoading, setIsLoading] = useState(true);
-  const [isTableLoading, setIsTableLoading] = useState(false);
+  const [isTableLoading, setIsTableLoading] = useState(true);
   const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [isColMenuOpen, setIsColMenuOpen] = useState(false);
@@ -49,9 +51,13 @@ const Inventory = () => {
   });
   const [showIssuerDropdown, setShowIssuerDropdown] = useState(false);
   const issuerDropdownRef = useRef(null);
+  const [showReturnInvTypeDropdown, setShowReturnInvTypeDropdown] = useState(false);
+  const returnInvTypeDropdownRef = useRef(null);
+  const [showReturnItemDropdown, setShowReturnItemDropdown] = useState(false);
+  const returnItemDropdownRef = useRef(null);
   const [showPartyDropdown, setShowPartyDropdown] = useState(false);
   const partyDropdownRef = useRef(null);
-  const [expandedParties, setExpandedParties] = useState(new Set());
+  const [lastReturnInfo, setLastReturnInfo] = useState({ date: '-', qty: '-' });
   const [masterData, setMasterData] = useState([]);
   const [stockRows, setStockRows] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
@@ -80,6 +86,8 @@ const Inventory = () => {
   // Edit State
   const [editDataMap, setEditDataMap] = useState({}); // { [serial]: rowArray }
   const [selectedSerials, setSelectedSerials] = useState(new Set());
+  const [selectedPartyCard, setSelectedPartyCard] = useState(null);
+  const [generatingReportParty, setGeneratingReportParty] = useState(null);
 
   const scriptUrl = import.meta.env.VITE_SCRIPT_URL;
   const folderId = import.meta.env.VITE_INVENTORY_FOLDER_ID;
@@ -114,11 +122,18 @@ const Inventory = () => {
     inventoryNo: '', inventoryType: '', department: '', itemsName: '', openingBalance: '', damageRate: '0', rentingRate: '0', totalCost: '0', foodName: '', eventDate: '', partyName: '', returnData: '0', returnDate: new Date().toISOString().split('T')[0], issueQty: '0', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '', forType: ''
   });
 
-  const [modalFilterDate, setModalFilterDate] = useState('');
-  const [modalFilterParty, setModalFilterParty] = useState('');
-  const [modalFilterItem, setModalFilterItem] = useState('');
+  const returnInvTypeOptions = useMemo(() => {
+    return [...new Set(masterData.map(row => row[0]).filter(Boolean))].sort();
+  }, [masterData]);
 
-  const [selectedIssueId, setSelectedIssueId] = useState('');
+  const returnItemOptions = useMemo(() => {
+    if (!returnForm.inventoryType) return [];
+    return masterData
+      .filter(row => row[0] === returnForm.inventoryType && row[1])
+      .map(row => row[1])
+      .sort();
+  }, [masterData, returnForm.inventoryType]);
+
   const [matchingIssuedRows, setMatchingIssuedRows] = useState([]);
 
   // Column Visibility & Config
@@ -177,6 +192,12 @@ const Inventory = () => {
       if (partyDropdownRef.current && !partyDropdownRef.current.contains(event.target)) {
         setShowPartyDropdown(false);
       }
+      if (returnInvTypeDropdownRef.current && !returnInvTypeDropdownRef.current.contains(event.target)) {
+        setShowReturnInvTypeDropdown(false);
+      }
+      if (returnItemDropdownRef.current && !returnItemDropdownRef.current.contains(event.target)) {
+        setShowReturnItemDropdown(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -231,14 +252,14 @@ const Inventory = () => {
         return `https://drive.google.com/uc?export=view&id=${match[1]}`;
       }
       return url;
-    } catch (e) { return url; }
+    } catch { return url; }
   };
 
   const toggleRowSelection = (row) => {
     const sn = row[1];
     const newSelected = new Set(selectedSerials);
     const newEditMap = { ...editDataMap };
-    
+
     if (newSelected.has(sn)) {
       newSelected.delete(sn);
       delete newEditMap[sn];
@@ -271,7 +292,7 @@ const Inventory = () => {
     setEditDataMap(prev => {
       const row = [...prev[sn]];
       row[index] = value;
-      
+
       if (type === 'issued') {
         // Recalculate Estimated Cost (Index 18) = Issue Qty (8) * Per Unit (10)
         if (index === 8 || index === 10) {
@@ -293,7 +314,7 @@ const Inventory = () => {
           const dRate = parseFloat(row[13] || 0);
           const rRate = parseFloat(row[14] || 0);
           row[20] = ((dmg + mis) * dRate + (ret * rRate)).toFixed(2);
-          
+
           // Logic requirement from plan: Issue Qty >= Damage + Missing
           const issueQty = parseFloat(row[9] || 0);
           if (dmg + mis > issueQty) {
@@ -357,13 +378,66 @@ const Inventory = () => {
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedSerials.size === 0) return;
+    if (!window.confirm(`Are you sure you want to delete ${selectedSerials.size} selected record(s)?`)) return;
+
+    setIsSubmitting(true);
+    let successCount = 0;
+    let failCount = 0;
+    const serialsArray = Array.from(selectedSerials);
+    const targetSheet = activeTab === 'issued' ? 'Issued' : 'Return';
+
+    try {
+      for (const serial of serialsArray) {
+        try {
+          const response = await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              action: 'delete',
+              sheetName: targetSheet,
+              spreadsheetId: spreadsheetId,
+              serialNumber: serial
+            })
+          });
+          const result = await response.json();
+          if (result.success) {
+            successCount++;
+          } else {
+            console.error(`Failed to delete serial ${serial}:`, result.error);
+            failCount++;
+          }
+        } catch (err) {
+          console.error(`Error deleting serial ${serial}:`, err);
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        showToast(`Successfully deleted ${successCount} record(s)`);
+      }
+      if (failCount > 0) {
+        showToast(`Failed to delete ${failCount} record(s)`, 'error');
+      }
+
+      // Clear selection and refresh history data
+      setSelectedSerials(new Set());
+      setEditDataMap({});
+      fetchHistory();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: '' }), 3000);
   };
 
   const fetchInitialData = async () => {
-    setIsLoading(true);
     try {
       const [dropdownRes, invRes] = await Promise.all([
         fetch(`${scriptUrl}?action=fetch&sheet=Master Drop-Down&spreadsheetId=${spreadsheetId}`).then(r => r.json()),
@@ -423,7 +497,7 @@ const Inventory = () => {
     } catch (err) {
       console.error('Fetch error:', err);
       showToast('Failed to load initial data', 'error');
-    } finally { setIsLoading(false); }
+    }
   };
 
   const fetchHistory = async () => {
@@ -445,6 +519,182 @@ const Inventory = () => {
     });
   };
 
+  const handleGeneratePartyReport = (partyName, rows) => {
+    const reportColumns = [
+      { header: 'S.No.', dataKey: 'sNo' },
+      { header: 'Item Name', dataKey: 'item' },
+      { header: 'Qty', dataKey: 'qty' },
+      { header: 'Image', dataKey: 'image' },
+      { header: 'Dishes', dataKey: 'dishes' },
+      { header: 'Remarks', dataKey: 'remark' }
+    ];
+
+    const loadImageAsBase64 = async (url) => {
+      if (!url || url === 'No Image') return null;
+      try {
+        const fileId = extractDriveFileId(url);
+        if (!fileId) return null;
+        const res = await fetch(`${scriptUrl}?action=getImageBase64&fileId=${fileId}&spreadsheetId=${spreadsheetId}`);
+        const result = await res.json();
+        return result.success ? result.base64 : null;
+      } catch { return null; }
+    };
+
+    setGeneratingReportParty(partyName);
+    setIsReportGenerating(true);
+
+    setTimeout(async () => {
+      try {
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageWidth = doc.internal.pageSize.width;
+        const marginOffset = 12;
+        const availableWidth = pageWidth - marginOffset;
+        const colStyles = {
+          sNo: { cellWidth: 15 },
+          item: { cellWidth: 50 },
+          qty: { cellWidth: 15 },
+          image: { cellWidth: 25 },
+          dishes: { cellWidth: 43 },
+          remark: { cellWidth: availableWidth - (15 + 50 + 15 + 25 + 43) }
+        };
+
+        const imageMap = {};
+        const imageList = [...new Set(rows.map(row => row[15]).filter(url => url && url !== 'No Image'))];
+        const results = await Promise.all(imageList.map(async (url) => ({ url, b64: await loadImageAsBase64(url) })));
+        results.forEach(({ url, b64 }) => { if (b64) imageMap[url] = b64; });
+
+        const body = rows.map((row, index) => ({
+          sNo: index + 1,
+          item: row[5] || '-',
+          qty: row[8] || '0',
+          image: row[15] && row[15] !== 'No Image' ? row[15] : '',
+          dishes: row[21] || '-',
+          remark: ''
+        }));
+
+        // Title and count
+        doc.setFontSize(16);
+        doc.setTextColor(109, 40, 217);
+        doc.setFont(undefined, 'bold');
+        doc.text("ISSUED HISTORY REPORT", 14, 12);
+
+        const titleWidth = doc.getTextWidth("ISSUED HISTORY REPORT ");
+        doc.setFontSize(12);
+        doc.setTextColor(150, 150, 150);
+        doc.setFont(undefined, 'normal');
+        doc.text(`(${rows.length})`, 14 + titleWidth, 12);
+
+        // Generated On timestamp
+        doc.setFontSize(9);
+        doc.setTextColor(100, 100, 100);
+        const formattedGenDate = new Date().toLocaleString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        }).replace(/\//g, '/'); // 27/05/2026, 13:51:37 format
+        doc.text(`Generated on: ${formattedGenDate}`, pageWidth - 14, 12, { align: 'right' });
+
+        // Metadata Subheaders (Date, For, Party, Event-Date)
+        const drawLabelValue = (label, value, x, y) => {
+          doc.setFont(undefined, 'bold');
+          doc.setTextColor(50, 50, 50);
+          doc.text(label, x, y);
+          const labelWidth = doc.getTextWidth(label);
+          doc.setFont(undefined, 'normal');
+          doc.setTextColor(80, 80, 80);
+          doc.text(value, x + labelWidth, y);
+        };
+
+        doc.setFontSize(10);
+        drawLabelValue("Date: ", formatDate(rows[0][0]), 14, 18);
+        drawLabelValue("For: ", rows[0][19] || '-', 65, 18);
+        drawLabelValue("Party: ", partyName, 14, 24);
+        drawLabelValue("Event-Date: ", formatDate(rows[0][7]), 65, 24);
+
+        autoTable(doc, {
+          startY: 30,
+          columns: reportColumns,
+          body: body,
+          theme: 'grid',
+          columnStyles: colStyles,
+          headStyles: {
+            fillColor: [109, 40, 217],
+            textColor: 255,
+            fontSize: 10,
+            fontStyle: 'bold',
+            halign: 'center',
+            cellPadding: 3
+          },
+          styles: {
+            fontSize: 9,
+            cellPadding: 2.5,
+            halign: 'center',
+            valign: 'middle',
+            overflow: 'ellipsize',
+            minCellHeight: 14
+          },
+          alternateRowStyles: { fillColor: [249, 250, 251] },
+          rowPageBreak: 'avoid',
+          margin: { top: 14, right: 6, bottom: 20, left: 6 },
+          willDrawCell: (data) => {
+            if (data.column.dataKey === 'image' && data.cell.section === 'body') {
+              data.cell.text = [];
+            }
+          },
+          didDrawCell: (data) => {
+            if (data.column.dataKey === 'image' && data.cell.section === 'body') {
+              const url = data.cell.raw;
+              const b64 = imageMap[url];
+              if (b64) {
+                const padding = 1.5;
+                const imgSize = Math.min(data.cell.width - padding * 2, data.cell.height - padding * 2, 10);
+                const x = data.cell.x + (data.cell.width - imgSize) / 2;
+                const y = data.cell.y + (data.cell.height - imgSize) / 2;
+                try {
+                  doc.addImage(b64, 'JPEG', x, y, imgSize, imgSize);
+                } catch (e) {
+                  console.warn('Failed to add image to PDF:', e);
+                }
+              }
+            }
+          },
+          didDrawPage: function () {
+            const pageNumber = doc.internal.getCurrentPageInfo().pageNumber;
+            doc.setFontSize(10);
+            doc.setTextColor(120);
+            doc.text(
+              `Page ${pageNumber} of {total_pages_count_string}`,
+              doc.internal.pageSize.width - 6,
+              doc.internal.pageSize.height - 8,
+              { align: 'right' }
+            );
+          }
+        });
+
+        if (typeof doc.putTotalPages === 'function') {
+          doc.putTotalPages('{total_pages_count_string}');
+        }
+
+        doc.save(`${partyName}_Issue_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+        showToast('Report generated successfully');
+      } catch (err) {
+        console.error('Report error:', err);
+        showToast('Failed to generate report', 'error');
+      } finally {
+        setIsReportGenerating(false);
+        setGeneratingReportParty(null);
+      }
+    }, 100);
+  };
+
+  useEffect(() => {
+    setSelectedPartyCard(null);
+  }, [activeTab, issuedFilterItem, issuedFilterType, issuedFilterParty, issuedStartDate, issuedEndDate, searchTerm]);
+
   useEffect(() => { fetchInitialData(); fetchHistory(); }, []);
 
   useEffect(() => {
@@ -465,7 +715,7 @@ const Inventory = () => {
     const filteredByItem = issueHistory.filter(r => (!issuedFilterType || r[3] === issuedFilterType) && (!issuedFilterParty || r[6] === issuedFilterParty));
     const filteredByType = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterParty || r[6] === issuedFilterParty));
     const filteredByParty = issueHistory.filter(r => (!issuedFilterItem || r[5] === issuedFilterItem) && (!issuedFilterType || r[3] === issuedFilterType));
-    
+
     return {
       items: [...new Set(filteredByItem.map(r => r[5]).filter(Boolean))].sort(),
       types: [...new Set(filteredByType.map(r => r[3]).filter(Boolean))].sort(),
@@ -567,7 +817,7 @@ const Inventory = () => {
 
   const validationState = useMemo(() => {
     if (!issueForm.itemsName || !issueForm.eventDate) return { remaining: 0, isOver: false, committed: 0 };
-    
+
     const selectedItem = normalizeForMatch(issueForm.itemsName);
     const selectedDate = issueForm.eventDate;
     const masterStock = Number(issueForm.openingBalance) || 0;
@@ -578,17 +828,17 @@ const Inventory = () => {
     const currentKey = `${currentParty}|${currentVenue}`;
 
     // 1. Group existing issues by (Party | Venue) AND (Slot)
-    const partyVenueMap = {}; 
+    const partyVenueMap = {};
     issueHistory.forEach(row => {
       const rowItem = normalizeForMatch(row[5]);
       const rowDate = toInputDate(row[7]);
-      
+
       if (rowItem === selectedItem && rowDate === selectedDate) {
         const p = normalizeForMatch(row[6]);
         const v = normalizeForMatch(row[14]);
         const s = normalizeForMatch(row[17] || 'Regular');
         const q = Number(row[8] || 0);
-        
+
         const key = `${p}|${v}`;
         if (!partyVenueMap[key]) partyVenueMap[key] = {};
         partyVenueMap[key][s] = (partyVenueMap[key][s] || 0) + q;
@@ -611,21 +861,20 @@ const Inventory = () => {
     const sumInCurrentSlot = (slotsInCurrent[currentSlot] || 0) + currentQty;
     const otherSlotsInCurrent = Object.entries(slotsInCurrent)
       .filter(([s]) => s !== currentSlot)
-      .map(([_, q]) => q);
-    
+      .map(entry => entry[1]);
+
     const currentGroupPotentialPeak = Math.max(sumInCurrentSlot, ...otherSlotsInCurrent, 0);
     const totalPotential = committedByOthers + currentGroupPotentialPeak;
     const isOver = totalPotential > masterStock;
     const totalCommittedRightNow = Object.values(groupPeaks).reduce((a, b) => a + b, 0);
 
-    return { 
-      remaining: Math.max(0, masterStock - totalCommittedRightNow), 
-      isOver, 
+    return {
+      remaining: Math.max(0, masterStock - totalCommittedRightNow),
+      isOver,
       committed: totalCommittedRightNow,
-      availableForThisGroup: masterStock - committedByOthers 
+      availableForThisGroup: masterStock - committedByOthers
     };
   }, [issueHistory, issueForm.itemsName, issueForm.eventDate, issueForm.partyName, issueForm.foodName, issueForm.eventTime, issueForm.issueData, issueForm.openingBalance]);
-
   // Auto-calculate Return Qty and Total Cost
   useEffect(() => {
     if (!isReturnModalOpen) return;
@@ -644,6 +893,111 @@ const Inventory = () => {
     });
   }, [returnForm.issueQty, returnForm.damageItems, returnForm.missingItems, returnForm.damageRate, returnForm.rentingRate, isReturnModalOpen]);
 
+  const handleSelectReturnItem = (itemName) => {
+    const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(itemName).trim().toLowerCase());
+    const item = inventoryItems.find(i => i.itemsName === itemName && i.inventoryType === returnForm.inventoryType);
+    const openingStock = item ? item.openingBalance : 0;
+
+    setReturnForm(prev => ({
+      ...prev,
+      itemsName: itemName,
+      inventoryNo: item ? item.inventoryNo : '',
+      department: item ? item.department : '',
+      openingBalance: openingStock.toString(),
+      closingBalance: (openingStock - Number(prev.issueQty || 0)).toString(),
+      damageRate: masterRow ? parseNumber(masterRow[6]).toString() : '0',
+      rentingRate: prev.forType === 'H3' ? '0' : (masterRow ? parseNumber(masterRow[5]).toString() : '0'),
+    }));
+  };
+
+  useEffect(() => {
+    if (!isReturnModalOpen || isEditing || !returnForm.itemsName) {
+      if (!isEditing && !returnForm.itemsName) {
+        setMatchingIssuedRows([]);
+        setLastReturnInfo({ date: '-', qty: '-' });
+      }
+      return;
+    }
+
+    const selectedItem = returnForm.itemsName;
+    const currentReturnDateStr = returnForm.returnDate;
+    if (!currentReturnDateStr) return;
+
+    const itemReturns = returnHistory.filter(row => row[5] === selectedItem);
+    let lastReturnDate = new Date('1970-01-01');
+    let latestReturnRow = null;
+
+    itemReturns.forEach(row => {
+      const rDateStr = toInputDate(row[8]);
+      if (rDateStr) {
+        const d = new Date(rDateStr);
+        if (!isNaN(d) && d > lastReturnDate) {
+          lastReturnDate = d;
+          latestReturnRow = row;
+        }
+      }
+    });
+
+    if (latestReturnRow) {
+      setLastReturnInfo({
+        date: formatDate(latestReturnRow[8]),
+        qty: latestReturnRow[10] || '0'
+      });
+    } else {
+      setLastReturnInfo({ date: 'No return history', qty: '0' });
+    }
+
+    const returnDate = new Date(currentReturnDateStr);
+    const yesterday = new Date(returnDate);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const matchingIssues = issueHistory.filter(row => {
+      if (row[5] !== selectedItem) return false;
+      const eventDateStr = toInputDate(row[7]);
+      if (!eventDateStr) return false;
+      const eventDate = new Date(eventDateStr);
+      if (isNaN(eventDate)) return false;
+      return eventDate > lastReturnDate && eventDate <= yesterday;
+    });
+
+    matchingIssues.sort((a, b) => {
+      const da = new Date(toInputDate(a[7]));
+      const db = new Date(toInputDate(b[7]));
+      return da - db;
+    });
+
+    setMatchingIssuedRows(matchingIssues);
+
+    const maxQty = matchingIssues.length > 0
+      ? Math.max(...matchingIssues.map(row => parseNumber(row[8])))
+      : 0;
+
+    const latestIssue = matchingIssues[matchingIssues.length - 1];
+    const chainForType = latestIssue ? (latestIssue[19] || 'Rent') : 'Rent';
+    const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(selectedItem).trim().toLowerCase());
+    const rentingRate = chainForType === 'H3' ? 0 : (masterRow ? parseNumber(masterRow[5]) : 0);
+
+    setReturnForm(prev => {
+      const openingStock = Number(prev.openingBalance || 0);
+      const newClosingBalance = (openingStock - maxQty).toString();
+
+      if (
+        prev.issueQty === maxQty.toString() &&
+        prev.forType === chainForType &&
+        prev.rentingRate === rentingRate.toString() &&
+        prev.closingBalance === newClosingBalance
+      ) return prev;
+
+      return {
+        ...prev,
+        issueQty: maxQty.toString(),
+        forType: chainForType,
+        rentingRate: rentingRate.toString(),
+        closingBalance: newClosingBalance
+      };
+    });
+  }, [isReturnModalOpen, isEditing, returnForm.itemsName, returnForm.inventoryType, returnForm.returnDate, issueHistory, returnHistory, masterData, inventoryItems]);
+
   const handleIssueSubmit = async (e) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
@@ -653,7 +1007,7 @@ const Inventory = () => {
         setIsSubmitting(false);
         return;
       }
-      
+
       const imageUrl = selectedImage ? await uploadToDrive(selectedImage) : (issueForm.imageUrl || 'No Image');
       const now = new Date();
       const localTimestamp = now.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(',', '');
@@ -676,78 +1030,24 @@ const Inventory = () => {
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
   };
 
-  const handleSelectIssue = (issueRow) => {
-    if (!issueRow) return;
-    setReturnForm(prev => ({
-      ...prev,
-      inventoryNo: issueRow[2],
-      inventoryType: issueRow[3],
-      department: issueRow[4],
-      itemsName: issueRow[5],
-      partyName: issueRow[6],
-      eventDate: toInputDate(issueRow[7]),
-      issueQty: parseNumber(issueRow[8]),
-      damageRate: parseNumber(issueRow[9]), 
-      rentingRate: parseNumber(issueRow[10]),
-      openingBalance: parseNumber(issueRow[11]),
-      closingBalance: parseNumber(issueRow[12]),
-      foodName: issueRow[14],
-      imageUrl: issueRow[15],
-      forType: issueRow[19]
-    }));
-    setIsReturnModalOpen(true);
-    if (issueRow[15]) setImagePreview(getDisplayableImageUrl(issueRow[15]));
-  };
-
-  const handleSelectBatch = (rows) => {
-    if (!rows || rows.length === 0) return;
-    const first = rows[0];
-    const totalQty = rows.reduce((sum, r) => sum + parseNumber(r[8]), 0);
-    
-    setReturnForm({
-      inventoryNo: first[2],
-      inventoryType: first[3],
-      department: first[4],
-      itemsName: first[5],
-      partyName: first[6],
-      eventDate: toInputDate(first[7]),
-      issueQty: totalQty,
-      damageRate: parseNumber(first[9]), 
-      rentingRate: parseNumber(first[10]),
-      openingBalance: parseNumber(first[11]),
-      closingBalance: '', 
-      foodName: first[14],
-      imageUrl: first[15],
-      returnData: '0', 
-      damageItems: '0', 
-      missingItems: '0',
-      remarks: '',
-      totalCost: '0',
-      forType: first[19] || '',
-      returnDate: new Date().toISOString().split('T')[0]
-    });
-    setMatchingIssuedRows(rows);
-    if (first[15]) setImagePreview(getDisplayableImageUrl(first[15]));
-  };
-
   const handleEditReturn = (row) => {
     setReturnForm({
-      inventoryNo: row[2], 
-      inventoryType: row[3], 
-      department: row[4], 
-      itemsName: row[5], 
-      partyName: row[6], 
-      eventDate: toInputDate(row[7]), 
-      returnDate: toInputDate(row[8]), 
-      issueQty: row[9], 
-      returnData: row[10], 
-      damageItems: row[11], 
-      missingItems: row[12], 
-      damageRate: row[13], 
-      rentingRate: row[14], 
-      openingBalance: row[15], 
-      closingBalance: row[16], 
-      remarks: row[19], 
+      inventoryNo: row[2],
+      inventoryType: row[3],
+      department: row[4],
+      itemsName: row[5],
+      partyName: row[6],
+      eventDate: toInputDate(row[7]),
+      returnDate: toInputDate(row[8]),
+      issueQty: row[9],
+      returnData: row[10],
+      damageItems: row[11],
+      missingItems: row[12],
+      damageRate: row[13],
+      rentingRate: row[14],
+      openingBalance: row[15],
+      closingBalance: row[16],
+      remarks: row[19],
       imageUrl: row[18],
       totalCost: row[20] || '0',
       forType: row[21] || ''
@@ -762,7 +1062,7 @@ const Inventory = () => {
       const imageUrl = selectedImage ? await uploadToDrive(selectedImage) : (returnForm.imageUrl || 'No Image');
       const now = new Date();
       const localTimestamp = now.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(',', '');
-      const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const toSheetDate = (val) => {
         if (!val) return '';
         const s = String(val).trim();
@@ -773,25 +1073,25 @@ const Inventory = () => {
         return s;
       };
       const baseRowData = [
-        isEditing ? originalTimestamp : localTimestamp, 
-        isEditing ? editingSerialNo : "", 
-        returnForm.inventoryNo, 
-        cleanText(returnForm.inventoryType), 
-        cleanText(returnForm.department), 
-        cleanText(returnForm.itemsName), 
-        cleanText(returnForm.partyName), 
-        toSheetDate(returnForm.eventDate), 
-        toSheetDate(returnForm.returnDate), 
-        returnForm.issueQty, 
-        returnForm.returnData, 
-        returnForm.damageItems, 
-        returnForm.missingItems, 
-        returnForm.damageRate, 
-        returnForm.rentingRate, 
-        returnForm.openingBalance, 
-        returnForm.closingBalance, 
-        (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(), 
-        imageUrl, 
+        isEditing ? originalTimestamp : localTimestamp,
+        isEditing ? editingSerialNo : "",
+        returnForm.inventoryNo,
+        cleanText(returnForm.inventoryType),
+        cleanText(returnForm.department),
+        cleanText(returnForm.itemsName),
+        cleanText(returnForm.partyName),
+        isEditing ? toSheetDate(returnForm.eventDate) : "",
+        toSheetDate(returnForm.returnDate),
+        returnForm.issueQty,
+        returnForm.returnData,
+        returnForm.damageItems,
+        returnForm.missingItems,
+        returnForm.damageRate,
+        returnForm.rentingRate,
+        returnForm.openingBalance,
+        returnForm.closingBalance,
+        (Number(returnForm.closingBalance || 0) + Number(returnForm.returnData || 0) - Number(returnForm.damageItems || 0) - Number(returnForm.missingItems || 0)).toString(),
+        imageUrl,
         cleanText(returnForm.remarks),
         returnForm.totalCost,
         cleanText(returnForm.forType) || ''
@@ -806,20 +1106,23 @@ const Inventory = () => {
         showToast(isEditing ? 'Record updated successfully' : 'Return recorded successfully');
         setIsReturnModalOpen(false); setIsEditing(false); setEditingSerialNo(null); setOriginalTimestamp(null);
         setReturnForm({ inventoryType: '', itemsName: '', department: '', inventoryNo: '', openingBalance: '', damageRate: '', rentingRate: '', totalCost: '', foodName: '', eventDate: '', partyName: '', returnData: '', returnDate: new Date().toISOString().split('T')[0], issueQty: '', damageItems: '0', missingItems: '0', closingBalance: '', remarks: '', imageUrl: '' });
-        setModalFilterDate(''); setModalFilterParty(''); setModalFilterItem(''); setSelectedImage(null); setImagePreview(null); fetchHistory();
+        setSelectedImage(null); setImagePreview(null); fetchHistory();
       } else throw new Error(result.error);
     } catch (err) { showToast(err.message || 'Failed to submit', 'error'); } finally { setIsSubmitting(false); }
   };
 
   const getFilteredHistory = () => activeTab === 'issued' ? filteredIssuedHistory : filteredReturnHistory;
-  
+
   const handleGenerateReport = () => {
     const isIssued = activeTab === 'issued';
     const sourceData = isIssued ? issueHistory : returnHistory;
-    
+
     // 1. Filter data (EXCLUDING search term as requested)
     const filteredReportData = sourceData.filter(row => {
       if (isIssued) {
+        if (shouldGroup && selectedPartyCard) {
+          return row[6] === selectedPartyCard;
+        }
         const matchesItem = !issuedFilterItem || row[5] === issuedFilterItem;
         const matchesType = !issuedFilterType || row[3] === issuedFilterType;
         const matchesParty = !issuedFilterParty || row[6] === issuedFilterParty;
@@ -866,7 +1169,7 @@ const Inventory = () => {
     const partyIdx = 6;
     const forIdx = isIssued ? 19 : 21;
     const eventDateIdx = isIssued ? 7 : -1;
-    
+
     const commonDateRaw = firstRow[dateIdx];
     const commonParty = firstRow[partyIdx];
     const commonFor = firstRow[forIdx];
@@ -892,16 +1195,16 @@ const Inventory = () => {
     }
 
     // 2. Identify visible columns (Strictly honors UI toggles)
-    const columnsToInclude = columnConfig.filter(col => 
+    const columnsToInclude = columnConfig.filter(col =>
       visibleColumns[col.key] !== false && col.key !== 'actions'
     );
 
     const reportColumns = [
-      { header: 'S.No.', dataKey: 'sNo' },
+      { header: 'S. No.', dataKey: 'sNo' },
       ...columnsToInclude.map(col => ({ header: col.label, dataKey: col.key })),
       { header: 'Remark', dataKey: 'remark' }
     ];
-    
+
     const body = filteredReportData.map((row, index) => {
       const rowData = { sNo: index + 1 };
       columnsToInclude.forEach(col => {
@@ -951,8 +1254,8 @@ const Inventory = () => {
         const unitWidth = availableWidth / totalWeight;
 
         reportColumns.forEach(col => {
-          colStyles[col.dataKey] = { 
-            cellWidth: col.dataKey === 'image' ? unitWidth * imgWeight : unitWidth * otherWeight 
+          colStyles[col.dataKey] = {
+            cellWidth: col.dataKey === 'image' ? unitWidth * imgWeight : unitWidth * otherWeight
           };
         });
 
@@ -963,14 +1266,14 @@ const Inventory = () => {
           const results = await Promise.all(uniqueUrls.map(async (url) => ({ url, b64: await loadImageAsBase64(url) })));
           results.forEach(({ url, b64 }) => { if (b64) imageMap[url] = b64; });
         }
-        
+
         // Add Title with Record Count
         const title = `${isIssued ? 'ISSUED' : 'RETURN'} HISTORY REPORT`;
         const countText = `(${body.length})`;
         doc.setFontSize(14);
         doc.setTextColor(124, 58, 237);
         doc.text(title, 14, 10);
-        
+
         const titleWidth = doc.getTextWidth(title);
         doc.setFontSize(9);
         doc.setTextColor(150, 150, 150);
@@ -986,12 +1289,12 @@ const Inventory = () => {
           doc.setFontSize(8);
           doc.setTextColor(60, 60, 60);
           doc.setFont(undefined, 'bold');
-          
+
           const row1 = `Date: ${formatDate(uniformInfo.date)}    For: ${uniformInfo.for}`;
           const row2 = `Party: ${uniformInfo.party}${uniformInfo.eventDate ? `    Event-Date: ${formatDate(uniformInfo.eventDate)}` : ''}`;
           doc.text(row1, 14, 16);
           doc.text(row2, 14, 21);
-          currentY = 28; 
+          currentY = 28;
         }
 
         autoTable(doc, {
@@ -1000,17 +1303,17 @@ const Inventory = () => {
           body: body,
           theme: 'grid',
           columnStyles: colStyles,
-          headStyles: { 
-            fillColor: [109, 40, 217], 
-            textColor: 255, 
-            fontSize: 7, 
-            fontStyle: 'bold', 
+          headStyles: {
+            fillColor: [109, 40, 217],
+            textColor: 255,
+            fontSize: 7,
+            fontStyle: 'bold',
             halign: 'center',
             cellPadding: 2
           },
-          styles: { 
-            fontSize: 6, 
-            cellPadding: 1.5, 
+          styles: {
+            fontSize: 6,
+            cellPadding: 1.5,
             halign: 'center',
             valign: 'middle',
             overflow: 'ellipsize',
@@ -1043,7 +1346,7 @@ const Inventory = () => {
               }
             }
           },
-          didDrawPage: function (data) {
+          didDrawPage: function () {
             const pageNumber = doc.internal.getCurrentPageInfo().pageNumber;
             doc.setFontSize(8);
             doc.setTextColor(120);
@@ -1083,15 +1386,24 @@ const Inventory = () => {
         <div className="flex items-center justify-between px-8 pt-6 pb-4">
           <div className="flex items-center gap-4">
             <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Inventory Management</h1>
+            {selectedSerials.size > 0 && (
+              <button
+                onClick={handleDeleteSelected}
+                disabled={isSubmitting}
+                className="h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 bg-rose-600 text-white hover:bg-rose-700 shadow-rose-100/50 active:scale-95 disabled:opacity-55"
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Delete ({selectedSerials.size})
+              </button>
+            )}
             {Object.keys(editDataMap).length > 0 && (
               <button
                 onClick={handleBatchSubmit}
                 disabled={isSubmitting || changedRowsCount === 0}
-                className={`h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 ${
-                  changedRowsCount > 0 
-                  ? "bg-orange-600 text-white hover:bg-orange-700 shadow-orange-100" 
-                  : "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
-                }`}
+                className={`h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 ${changedRowsCount > 0
+                    ? "bg-orange-600 text-white hover:bg-orange-700 shadow-orange-100"
+                    : "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
+                  }`}
               >
                 {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 Submit {changedRowsCount} {changedRowsCount === 1 ? 'Change' : 'Changes'}
@@ -1099,7 +1411,7 @@ const Inventory = () => {
             )}
           </div>
           <div className="flex items-center gap-4">
-            <div 
+            <div
               onClick={() => setShowFullTotal(!showFullTotal)}
               className="flex items-center h-10 px-4 bg-emerald-600 text-white rounded-lg shadow-sm animate-in fade-in slide-in-from-right-4 duration-500 cursor-pointer hover:bg-emerald-700 transition-all select-none"
               title={showFullTotal ? "Click to see short format" : "Click to see exact amount"}
@@ -1108,10 +1420,10 @@ const Inventory = () => {
                 {activeTab === 'issued' ? 'Issue Amount:' : 'Return Amount:'}
               </span>
               <span className="text-sm font-bold text-white">
-                ₹{showFullTotal 
-                   ? totalInventoryCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                   : formatIndianAmount(totalInventoryCost)
-                 }
+                ₹{showFullTotal
+                  ? totalInventoryCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  : formatIndianAmount(totalInventoryCost)
+                }
               </span>
             </div>
             <button onClick={() => { setIsIssueModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-violet-100">
@@ -1120,14 +1432,16 @@ const Inventory = () => {
             <button onClick={() => { setIsReturnModalOpen(true); setImagePreview(null); setSelectedImage(null); }} className="h-10 px-5 bg-white border border-fuchsia-200 text-fuchsia-600 rounded-lg flex items-center gap-2 text-sm font-semibold hover:bg-fuchsia-50 transition-all shadow-sm">
               <ArrowLeftRight className="h-4 w-4 text-fuchsia-400" /> Return Form
             </button>
-            <button 
-              onClick={handleGenerateReport} 
-              disabled={isReportGenerating}
-              className={`h-10 px-5 bg-gradient-to-r from-indigo-600 to-violet-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold transition-all shadow-lg shadow-indigo-100 ${isReportGenerating ? 'opacity-70 cursor-not-allowed' : 'hover:opacity-90'}`}
-            >
-              {isReportGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4 text-white/70" />}
-              {activeTab === 'issued' ? 'Issue Report' : 'Return Report'}
-            </button>
+            {activeTab === 'return' && (
+              <button
+                onClick={handleGenerateReport}
+                disabled={isReportGenerating}
+                className={`h-10 px-5 bg-gradient-to-r from-indigo-600 to-violet-500 text-white rounded-lg flex items-center gap-2 text-sm font-semibold transition-all shadow-lg shadow-indigo-100 ${isReportGenerating ? 'opacity-70 cursor-not-allowed' : 'hover:opacity-90'}`}
+              >
+                {isReportGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4 text-white/70" />}
+                Return Report
+              </button>
+            )}
           </div>
         </div>
 
@@ -1181,15 +1495,15 @@ const Inventory = () => {
 
                     {isDateMenuOpen && (
                       <>
-                        <div 
-                          className="fixed inset-0 z-[140]" 
+                        <div
+                          className="fixed inset-0 z-[140]"
                           onClick={() => setIsDateMenuOpen(false)}
                         />
                         <div className="absolute top-10 right-0 z-[160] w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200">
                           <div className="flex items-center justify-between mb-3 border-b border-slate-50 pb-2">
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{activeTab === 'issued' ? 'Issued History' : 'Return History'}</p>
                             {(activeTab === 'issued' ? (issuedStartDate || issuedEndDate) : (returnStartDate || returnEndDate)) && (
-                              <button 
+                              <button
                                 onClick={() => { if (activeTab === 'issued') { setIssuedStartDate(""); setIssuedEndDate(""); } else { setReturnStartDate(""); setReturnEndDate(""); } }}
                                 className="text-[9px] font-bold text-red-500 hover:text-red-600 uppercase tracking-tighter"
                               >
@@ -1197,7 +1511,7 @@ const Inventory = () => {
                               </button>
                             )}
                           </div>
-                          
+
                           <div className="space-y-3">
                             <div className="space-y-1">
                               <label className="text-[9px] font-bold text-slate-400 uppercase">From</label>
@@ -1240,7 +1554,7 @@ const Inventory = () => {
                   {((activeTab === 'issued' ? (issuedFilterItem || issuedFilterType || issuedFilterParty || issuedStartDate || issuedEndDate) : (returnFilterItem || returnFilterType || returnFilterParty || returnStartDate || returnEndDate)) || searchTerm) && (
                     <button
                       onClick={() => {
-                        if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterParty(""); setIssuedStartDate(""); setIssuedEndDate(""); } 
+                        if (activeTab === 'issued') { setIssuedFilterItem(""); setIssuedFilterType(""); setIssuedFilterParty(""); setIssuedStartDate(""); setIssuedEndDate(""); }
                         else { setReturnFilterItem(""); setReturnFilterType(""); setReturnFilterParty(""); setReturnStartDate(""); setReturnEndDate(""); }
                         setSearchTerm("");
                       }}
@@ -1274,86 +1588,98 @@ const Inventory = () => {
           </div>
 
           <div className="flex-1 overflow-auto custom-scrollbar relative">
-            <table className="w-full text-center border-collapse border-separate border-spacing-0">
-              <thead className="sticky top-0 z-20">
-                <tr className="bg-violet-50">
-                  <th className="px-4 py-4 w-12 text-center bg-violet-50 border-b border-violet-100/50">
-                    <input 
-                      type="checkbox" 
-                      className="w-4 h-4 rounded border-violet-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
-                      checked={getFilteredHistory().length > 0 && selectedSerials.size === getFilteredHistory().length}
-                      onChange={() => handleSelectAll(getFilteredHistory())}
+            {activeTab === 'issued' && shouldGroup && !selectedPartyCard ? (
+              isTableLoading ? (
+                <div className="py-32 text-center flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="h-10 w-10 animate-spin text-violet-600" />
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Loading Party Cards...</p>
+                </div>
+              ) : groupedIssuedData.length === 0 ? (
+                <div className="py-32 text-center text-slate-350 flex flex-col items-center justify-center">
+                  <Database className="h-16 w-16 mx-auto mb-4 opacity-20 text-slate-400" />
+                  <p className="text-sm font-bold uppercase tracking-widest text-slate-400">No records found</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 p-6 animate-in fade-in duration-300">
+                  {groupedIssuedData.map((group, idx) => (
+                    <PartyCard
+                      key={idx}
+                      partyName={group.partyName}
+                      eventDate={group.latestDate}
+                      totalQty={group.totalQty}
+                      totalCost={group.totalCost}
+                      isDownloading={generatingReportParty === group.partyName}
+                      onDownloadReport={() => handleGeneratePartyReport(group.partyName, group.rows)}
+                      onClick={() => setSelectedPartyCard(group.partyName)}
                     />
-                  </th>
-                  {columnConfig.map(col => visibleColumns[col.key] !== false && (
-                    <th key={col.key} className={`px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center ${['date', 'eventDate', 'returnDate'].includes(col.key) ? 'min-w-[120px]' : ''}`}>{col.label}</th>
                   ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {isTableLoading ? (
-                  <tr><td colSpan={columnConfig.length + 1} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
-                ) : getFilteredHistory().length === 0 ? (
-                  <tr><td colSpan={columnConfig.length + 1} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
-                ) : shouldGroup ? (
-                  groupedIssuedData.map((group, gIdx) => {
-                    const isExpanded = expandedParties.has(group.partyName);
-                    const activeColsCount = columnConfig.filter(col => visibleColumns[col.key] !== false).length;
-                    const totalColsCount = activeColsCount + 1;
-
-                    const togglePartyExpand = (pName) => {
-                      const newExpanded = new Set(expandedParties);
-                      if (newExpanded.has(pName)) {
-                        newExpanded.delete(pName);
-                      } else {
-                        newExpanded.add(pName);
-                      }
-                      setExpandedParties(newExpanded);
-                    };
-
-                    return (
-                      <React.Fragment key={`group-${gIdx}`}>
-                        {/* Group Header Row */}
-                        <tr 
-                          onClick={() => togglePartyExpand(group.partyName)}
-                          className="cursor-pointer bg-slate-50 hover:bg-slate-100/80 transition-colors border-b border-slate-150"
-                        >
-                          <td colSpan={totalColsCount} className="px-6 py-3.5 text-left select-none">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <span className="text-slate-400">
-                                  {isExpanded ? (
-                                    <ChevronDown className="h-4 w-4 text-violet-600" />
-                                  ) : (
-                                    <ChevronDown className="h-4 w-4 -rotate-90 transition-transform text-slate-400" />
-                                  )}
-                                </span>
-                                <span className="font-bold text-slate-800 text-sm">
-                                  {group.partyName}
-                                </span>
-                                <span className="px-2.5 py-0.5 text-[10px] font-black bg-violet-100 text-violet-700 rounded-full uppercase tracking-wider">
-                                  {group.rows.length} {group.rows.length === 1 ? 'entry' : 'entries'}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-6 text-xs text-slate-500 font-semibold pr-4">
-                                <span>Latest Event Date: <strong className="text-slate-700">{formatDate(group.latestDate)}</strong></span>
-                                <span>Total Qty: <strong className="text-slate-700">{group.totalQty}</strong></span>
-                                <span>Total Cost: <strong className="text-emerald-600">₹{group.totalCost.toFixed(2)}</strong></span>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                        {/* Group Child Rows (only rendered when expanded) */}
-                        {isExpanded && group.rows.map((row, idx) => {
+                </div>
+              )
+            ) : (
+              <>
+                {activeTab === 'issued' && shouldGroup && selectedPartyCard && (
+                  <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-100/80 sticky top-0 z-30 animate-in slide-in-from-top-2 duration-200">
+                    <button
+                      onClick={() => setSelectedPartyCard(null)}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 rounded-xl text-xs font-bold text-violet-600 border border-slate-200/50 hover:border-slate-200 transition-all select-none"
+                    >
+                      <ArrowLeft className="h-3.5 w-3.5" /> Back to Parties
+                    </button>
+                    <button
+                      onClick={handleGenerateReport}
+                      disabled={isReportGenerating}
+                      className="flex items-center gap-2 px-3.5 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-violet-100/50 hover:scale-[1.02] active:scale-95 select-none disabled:opacity-75"
+                    >
+                      {isReportGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />} Download Report
+                    </button>
+                    <span className="text-xs font-bold text-slate-500">
+                      Showing records for: <strong className="text-slate-800">{selectedPartyCard}</strong>
+                    </span>
+                  </div>
+                )}
+                <table className="w-full text-center border-collapse border-separate border-spacing-0">
+                  <thead className="sticky top-0 z-20">
+                    <tr className="bg-violet-50">
+                      <th className="px-4 py-4 w-12 text-center bg-violet-50 border-b border-violet-100/50">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded border-violet-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                          checked={
+                            (activeTab === 'issued' && shouldGroup && selectedPartyCard)
+                              ? (groupedIssuedData.find(g => g.partyName === selectedPartyCard)?.rows?.length > 0 && selectedSerials.size === groupedIssuedData.find(g => g.partyName === selectedPartyCard)?.rows?.length)
+                              : (getFilteredHistory().length > 0 && selectedSerials.size === getFilteredHistory().length)
+                          }
+                          onChange={() =>
+                            (activeTab === 'issued' && shouldGroup && selectedPartyCard)
+                              ? handleSelectAll(groupedIssuedData.find(g => g.partyName === selectedPartyCard)?.rows || [])
+                              : handleSelectAll(getFilteredHistory())
+                          }
+                        />
+                      </th>
+                      {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                        <th key={col.key} className={`px-6 py-4 text-[10px] font-bold text-violet-600 uppercase tracking-[0.15em] bg-violet-50 border-b border-violet-100/50 text-center ${['date', 'eventDate', 'returnDate'].includes(col.key) ? 'min-w-[120px]' : ''}`}>{col.label}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {isTableLoading ? (
+                      <tr><td colSpan={columnConfig.length + 1} className="py-20 text-center"><div className="flex flex-col items-center gap-3"><Loader2 className="h-10 w-10 animate-spin text-violet-200" /><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Loading Records...</p></div></td></tr>
+                    ) : getFilteredHistory().length === 0 ? (
+                      <tr><td colSpan={columnConfig.length + 1} className="py-32 text-center text-slate-300"><Database className="h-12 w-12 mx-auto mb-4 opacity-10" /><p className="text-xs font-bold uppercase tracking-widest">No history found</p></td></tr>
+                    ) : (activeTab === 'issued' && shouldGroup && selectedPartyCard) ? (
+                      (() => {
+                        const partyGroup = groupedIssuedData.find(g => g.partyName === selectedPartyCard);
+                        const displayRows = partyGroup ? partyGroup.rows : [];
+                        return displayRows.map((row, idx) => {
                           const sn = row[1];
                           const isSelected = selectedSerials.has(sn);
                           const currentData = editDataMap[sn] || row;
 
                           return (
-                            <tr key={`${group.partyName}-${idx}`} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'bg-slate-50/10 hover:bg-slate-50/30'}`}>
-                              <td className="px-4 py-3 text-center pl-8">
-                                <input 
-                                  type="checkbox" 
+                            <tr key={idx} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'hover:bg-slate-50/50'}`}>
+                              <td className="px-4 py-3 text-center">
+                                <input
+                                  type="checkbox"
                                   className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
                                   checked={isSelected}
                                   onChange={() => toggleRowSelection(row)}
@@ -1363,28 +1689,20 @@ const Inventory = () => {
                                 <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
                                   {isSelected && activeTab === 'issued' && col.key === 'qty' ? (
                                     <input type="number" value={currentData[8]} onChange={(e) => handleInlineEdit(sn, 8, e.target.value, 'issued')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                                  ) : isSelected && activeTab === 'return' && col.key === 'qty' ? (
-                                    <input type="number" value={currentData[10]} onChange={(e) => handleInlineEdit(sn, 10, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                                  ) : isSelected && activeTab === 'return' && col.key === 'damage' ? (
-                                    <input type="number" value={currentData[11]} onChange={(e) => handleInlineEdit(sn, 11, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                                  ) : isSelected && activeTab === 'return' && col.key === 'missing' ? (
-                                    <input type="number" value={currentData[12]} onChange={(e) => handleInlineEdit(sn, 12, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
                                   ) : col.key === 'actions' ? (
                                     <button onClick={() => handleEditReturn(currentData)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
                                   ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
                                     <span className="text-slate-400 whitespace-nowrap">{formatDate(currentData[col.index])}</span>
-                                  ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{currentData[col.index]}</span>
-                                  ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{currentData[col.index]}</span>
-                                  ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{currentData[col.index]}</span>
-                                  ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
+                                  ) : col.key === 'item' ? (<span className="font-bold text-slate-800">{currentData[col.index]}</span>
+                                  ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? (<span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
                                   ) : col.key === 'image' ? (
                                     currentData[col.index] && currentData[col.index] !== 'No Image' ? (
                                       <div className="relative flex justify-center group/img">
                                         <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform">
-                                          <img 
-                                            src={getDisplayableImageUrl(currentData[col.index])} 
-                                            alt="Item" 
-                                            className="h-full w-full object-cover" 
+                                          <img
+                                            src={getDisplayableImageUrl(currentData[col.index])}
+                                            alt="Item"
+                                            className="h-full w-full object-cover"
                                             onError={(e) => {
                                               const id = extractDriveFileId(currentData[col.index]);
                                               if (id && !e.target.dataset.retried) {
@@ -1401,72 +1719,74 @@ const Inventory = () => {
                               ))}
                             </tr>
                           );
-                        })}
-                      </React.Fragment>
-                    );
-                  })
-                ) : (
-                  getFilteredHistory().map((row, idx) => {
-                    const sn = row[1];
-                    const isSelected = selectedSerials.has(sn);
-                    const currentData = editDataMap[sn] || row;
+                        });
+                      })()
+                    ) : shouldGroup ? (
+                      <tr><td colSpan={columnConfig.length + 1} className="py-20 text-center"><p className="text-xs font-bold uppercase tracking-widest text-slate-350">Choose a party card above</p></td></tr>
+                    ) : (
+                      getFilteredHistory().map((row, idx) => {
+                        const sn = row[1];
+                        const isSelected = selectedSerials.has(sn);
+                        const currentData = editDataMap[sn] || row;
 
-                    return (
-                      <tr key={idx} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'hover:bg-slate-50/50'}`}>
-                        <td className="px-4 py-3 text-center">
-                          <input 
-                            type="checkbox" 
-                            className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
-                            checked={isSelected}
-                            onChange={() => toggleRowSelection(row)}
-                          />
-                        </td>
-                        {columnConfig.map(col => visibleColumns[col.key] !== false && (
-                          <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
-                            {isSelected && activeTab === 'issued' && col.key === 'qty' ? (
-                              <input type="number" value={currentData[8]} onChange={(e) => handleInlineEdit(sn, 8, e.target.value, 'issued')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                            ) : isSelected && activeTab === 'return' && col.key === 'qty' ? (
-                              <input type="number" value={currentData[10]} onChange={(e) => handleInlineEdit(sn, 10, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                            ) : isSelected && activeTab === 'return' && col.key === 'damage' ? (
-                              <input type="number" value={currentData[11]} onChange={(e) => handleInlineEdit(sn, 11, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                            ) : isSelected && activeTab === 'return' && col.key === 'missing' ? (
-                              <input type="number" value={currentData[12]} onChange={(e) => handleInlineEdit(sn, 12, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
-                            ) : col.key === 'actions' ? (
-                              <button onClick={() => handleEditReturn(currentData)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
-                            ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
-                              <span className="text-slate-400 whitespace-nowrap">{formatDate(currentData[col.index])}</span>
-                            ) : col.key === 'damage' ? ( <span className="text-red-500 font-bold">{currentData[col.index]}</span>
-                            ) : col.key === 'missing' ? ( <span className="text-orange-500 font-bold">{currentData[col.index]}</span>
-                            ) : col.key === 'item' ? ( <span className="font-bold text-slate-800">{currentData[col.index]}</span>
-                            ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? ( <span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
-                            ) : col.key === 'image' ? (
-                              currentData[col.index] && currentData[col.index] !== 'No Image' ? (
-                                <div className="relative flex justify-center group/img">
-                                  <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform">
-                                    <img 
-                                      src={getDisplayableImageUrl(currentData[col.index])} 
-                                      alt="Item" 
-                                      className="h-full w-full object-cover" 
-                                      onError={(e) => {
-                                        const id = extractDriveFileId(currentData[col.index]);
-                                        if (id && !e.target.dataset.retried) {
-                                          e.target.dataset.retried = '1';
-                                          e.target.src = `https://lh3.googleusercontent.com/d/${id}`;
-                                        }
-                                      }}
-                                    />
-                                  </a>
-                                </div>
-                              ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
-                            ) : currentData[col.index] || '-'}
-                          </td>
-                        ))}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                        return (
+                          <tr key={idx} className={`transition-all font-sans border-b border-slate-50 last:border-0 ${isSelected ? 'bg-violet-50/50' : 'hover:bg-slate-50/50'}`}>
+                            <td className="px-4 py-3 text-center">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                                checked={isSelected}
+                                onChange={() => toggleRowSelection(row)}
+                              />
+                            </td>
+                            {columnConfig.map(col => visibleColumns[col.key] !== false && (
+                              <td key={col.key} className="px-4 py-3 text-xs font-semibold text-slate-600 text-center">
+                                {isSelected && activeTab === 'issued' && col.key === 'qty' ? (
+                                  <input type="number" value={currentData[8]} onChange={(e) => handleInlineEdit(sn, 8, e.target.value, 'issued')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                ) : isSelected && activeTab === 'return' && col.key === 'qty' ? (
+                                  <input type="number" value={currentData[10]} onChange={(e) => handleInlineEdit(sn, 10, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                ) : isSelected && activeTab === 'return' && col.key === 'damage' ? (
+                                  <input type="number" value={currentData[11]} onChange={(e) => handleInlineEdit(sn, 11, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                ) : isSelected && activeTab === 'return' && col.key === 'missing' ? (
+                                  <input type="number" value={currentData[12]} onChange={(e) => handleInlineEdit(sn, 12, e.target.value, 'return')} className="w-20 px-2 py-1 bg-white border border-violet-200 rounded text-center text-xs font-bold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/20" />
+                                ) : col.key === 'actions' ? (
+                                  <button onClick={() => handleEditReturn(currentData)} className="p-2 bg-slate-100 text-slate-400 hover:bg-violet-600 hover:text-white rounded-lg transition-all" title="Edit Record"><Settings2 className="h-4 w-4" /></button>
+                                ) : col.key === 'date' || col.key === 'eventDate' || col.key === 'returnDate' ? (
+                                  <span className="text-slate-400 whitespace-nowrap">{formatDate(currentData[col.index])}</span>
+                                ) : col.key === 'damage' ? (<span className="text-red-500 font-bold">{currentData[col.index]}</span>
+                                ) : col.key === 'missing' ? (<span className="text-orange-500 font-bold">{currentData[col.index]}</span>
+                                ) : col.key === 'item' ? (<span className="font-bold text-slate-800">{currentData[col.index]}</span>
+                                ) : col.key === 'estimatedCost' || col.key === 'totalCost' ? (<span className="font-bold text-emerald-600">₹{parseFloat(currentData[col.index] || 0).toFixed(2)}</span>
+                                ) : col.key === 'image' ? (
+                                  currentData[col.index] && currentData[col.index] !== 'No Image' ? (
+                                    <div className="relative flex justify-center group/img">
+                                      <a href={currentData[col.index]} target="_blank" rel="noopener noreferrer" className="h-10 w-10 rounded-lg overflow-hidden border border-slate-100 flex items-center justify-center bg-slate-50 group-hover:scale-110 transition-transform">
+                                        <img
+                                          src={getDisplayableImageUrl(currentData[col.index])}
+                                          alt="Item"
+                                          className="h-full w-full object-cover"
+                                          onError={(e) => {
+                                            const id = extractDriveFileId(currentData[col.index]);
+                                            if (id && !e.target.dataset.retried) {
+                                              e.target.dataset.retried = '1';
+                                              e.target.src = `https://lh3.googleusercontent.com/d/${id}`;
+                                            }
+                                          }}
+                                        />
+                                      </a>
+                                    </div>
+                                  ) : <EyeOff className="h-4 w-4 opacity-10 mx-auto text-slate-200" />
+                                ) : currentData[col.index] || '-'}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </>
+            )}
           </div>
         </div>
 
@@ -1490,21 +1810,21 @@ const Inventory = () => {
                   <div className="grid grid-cols-4 gap-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">For *</label>
-                      <select 
-                        value={issueForm.forType} 
+                      <select
+                        value={issueForm.forType}
                         onChange={(e) => {
                           const val = e.target.value;
                           const item = inventoryItems.find(i => i.itemsName === issueForm.itemsName && i.inventoryType === issueForm.inventoryType);
                           const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(issueForm.itemsName).trim().toLowerCase());
-                          
-                          setIssueForm(p => ({ 
-                            ...p, 
+
+                          setIssueForm(p => ({
+                            ...p,
                             forType: val,
                             perUnit: val === 'H3' ? '0' : (masterRow ? masterRow[5] : (item ? item.perUnit : p.perUnit)),
                             unit: val === 'H3' ? '0' : (masterRow ? masterRow[6] : (item ? item.unit : p.unit))
                           }));
-                        }} 
-                        required 
+                        }}
+                        required
                         className="w-full h-11 px-4 rounded-lg border-2 border-violet-100 focus:border-violet-500 outline-none text-sm font-bold text-violet-700 bg-violet-50/20 transition-all"
                       >
                         <option value="Rent">Rent</option>
@@ -1515,20 +1835,20 @@ const Inventory = () => {
                     <div className="space-y-1 relative" ref={issuerDropdownRef}>
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issuer *</label>
                       <div className="relative">
-                        <input 
-                          type="text" 
-                          value={issueForm.issuer} 
+                        <input
+                          type="text"
+                          value={issueForm.issuer}
                           onChange={(e) => {
                             const val = e.target.value;
                             setIssueForm(p => ({ ...p, issuer: val }));
                             setShowIssuerDropdown(true);
                           }}
                           onFocus={() => setShowIssuerDropdown(true)}
-                          required 
-                          placeholder="Type or select..." 
+                          required
+                          placeholder="Type or select..."
                           className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white"
                         />
-                        <button 
+                        <button
                           type="button"
                           onClick={() => setShowIssuerDropdown(!showIssuerDropdown)}
                           className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors"
@@ -1536,7 +1856,7 @@ const Inventory = () => {
                           <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showIssuerDropdown ? 'rotate-180' : ''}`} />
                         </button>
                       </div>
-                      
+
                       {showIssuerDropdown && (
                         <div className="absolute z-[160] w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-200">
                           {(dropdownOptions.issuerOptions || [])
@@ -1574,17 +1894,17 @@ const Inventory = () => {
                         const val = e.target.value;
                         const item = inventoryItems.find(i => i.itemsName === val && i.inventoryType === issueForm.inventoryType);
                         const masterRow = masterData.find(row => String(row[1] || '').trim().toLowerCase() === String(val).trim().toLowerCase());
-                        
+
                         if (item) {
-                          setIssueForm(prev => ({ 
-                            ...prev, 
-                            itemsName: val, 
-                            department: item.department, 
-                            inventoryNo: item.inventoryNo, 
-                            openingBalance: item.openingBalance, 
-                            perUnit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[5] : item.perUnit), 
-                            unit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[6] : item.unit), 
-                            imageUrl: item.imageUrl 
+                          setIssueForm(prev => ({
+                            ...prev,
+                            itemsName: val,
+                            department: item.department,
+                            inventoryNo: item.inventoryNo,
+                            openingBalance: item.openingBalance,
+                            perUnit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[5] : item.perUnit),
+                            unit: prev.forType === 'H3' ? '0' : (masterRow ? masterRow[6] : item.unit),
+                            imageUrl: item.imageUrl
                           }));
                           if (item.imageUrl) setImagePreview(getDisplayableImageUrl(item.imageUrl));
                         }
@@ -1596,63 +1916,144 @@ const Inventory = () => {
                   </div>
                 )}
 
-                {isReturnModalOpen && !isEditing && (
+                {isReturnModalOpen && isEditing && (
                   <div className="grid grid-cols-3 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Event Date *</label>
-                      <select 
-                        value={modalFilterDate} 
-                        onChange={(e) => { 
-                          const d = e.target.value; 
-                          setModalFilterDate(d); setModalFilterParty(''); setModalFilterItem(''); 
-                          setReturnForm(p => ({ ...p, eventDate: d, partyName: '', itemsName: '' })); 
-                        }} 
-                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white"
-                      >
-                        <option value="">Select date</option>
-                        {[...new Set(issueHistory.map(row => row[7]).filter(Boolean))].sort().map(d => <option key={d} value={toInputDate(d)}>{formatDate(d)}</option>)}
-                      </select>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party-Month</label>
+                      <div className="w-full h-11 px-4 rounded-lg border border-slate-200 bg-slate-50 flex items-center text-sm font-medium text-slate-500">
+                        {returnForm.partyName || '-'}
+                      </div>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
-                      <select 
-                        value={modalFilterParty} 
-                        disabled={!modalFilterDate}
-                        onChange={(e) => { 
-                          const p = e.target.value; 
-                          setModalFilterParty(p); setModalFilterItem(''); 
-                          setReturnForm(prev => ({ ...prev, partyName: p, itemsName: '' })); 
-                        }} 
-                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
-                      >
-                        <option value="">Select party</option>
-                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate).map(r => r[6]).filter(Boolean))].sort().map(p => <option key={p} value={p}>{p}</option>)}
-                      </select>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type</label>
+                      <div className="w-full h-11 px-4 rounded-lg border border-slate-200 bg-slate-50 flex items-center text-sm font-medium text-slate-500">
+                        {returnForm.inventoryType || '-'}
+                      </div>
                     </div>
                     <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name</label>
+                      <div className="w-full h-11 px-4 rounded-lg border border-slate-200 bg-slate-50 flex items-center text-sm font-medium text-slate-500">
+                        {returnForm.itemsName || '-'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isReturnModalOpen && !isEditing && (
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* Party-Month Field */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party-Month *</label>
+                      <input
+                        type="text"
+                        value={returnForm.partyName}
+                        onChange={(e) => setReturnForm(p => ({ ...p, partyName: e.target.value }))}
+                        placeholder="e.g. May 2026"
+                        required
+                        className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white"
+                      />
+                    </div>
+
+                    {/* Inventory Type (Searchable Dropdown) */}
+                    <div className="space-y-1 relative" ref={returnInvTypeDropdownRef}>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Inventory Type *</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={returnForm.inventoryType}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setReturnForm(p => ({ ...p, inventoryType: val, itemsName: '' }));
+                            setShowReturnInvTypeDropdown(true);
+                          }}
+                          onFocus={() => setShowReturnInvTypeDropdown(true)}
+                          required
+                          placeholder="Type or select..."
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowReturnInvTypeDropdown(!showReturnInvTypeDropdown)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors"
+                        >
+                          <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showReturnInvTypeDropdown ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+
+                      {showReturnInvTypeDropdown && (
+                        <div className="absolute z-[160] w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-200">
+                          {returnInvTypeOptions
+                            .filter(opt => !returnForm.inventoryType || opt.toLowerCase().includes(returnForm.inventoryType.toLowerCase()))
+                            .map((opt, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => {
+                                  setReturnForm(p => ({ ...p, inventoryType: opt, itemsName: '' }));
+                                  setShowReturnInvTypeDropdown(false);
+                                }}
+                                className="w-full px-4 py-2.5 text-left text-sm font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-600 transition-colors border-b border-slate-50 last:border-0"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          {returnInvTypeOptions.filter(opt => !returnForm.inventoryType || opt.toLowerCase().includes(returnForm.inventoryType.toLowerCase())).length === 0 && (
+                            <div className="px-4 py-3 text-xs font-bold text-slate-400 italic text-center">No matching types</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Item Name (Searchable Dropdown) */}
+                    <div className="space-y-1 relative" ref={returnItemDropdownRef}>
                       <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Item Name *</label>
-                      <select 
-                        value={modalFilterItem} 
-                        disabled={!modalFilterParty}
-                        onChange={(e) => { 
-                          const i = e.target.value; 
-                          setModalFilterItem(i); 
-                          const matches = issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty && r[5] === i);
-                          if (matches.length > 0) handleSelectBatch(matches);
-                          else setMatchingIssuedRows([]);
-                        }} 
-                        className="w-full h-11 px-4 rounded-lg border border-slate-200 outline-none text-sm font-medium bg-white disabled:bg-slate-50"
-                      >
-                        <option value="">Select item</option>
-                        {[...new Set(issueHistory.filter(r => toInputDate(r[7]) === modalFilterDate && r[6] === modalFilterParty).map(r => r[5]).filter(Boolean))]
-                          .filter(itemName => !returnHistory.some(ret => 
-                            ret[5] === itemName && 
-                            ret[6] === modalFilterParty && 
-                            toInputDate(ret[7]) === modalFilterDate
-                          ))
-                          .sort()
-                          .map(i => <option key={i} value={i}>{i}</option>)}
-                      </select>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={returnForm.itemsName}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setReturnForm(p => ({ ...p, itemsName: val }));
+                            setShowReturnItemDropdown(true);
+                          }}
+                          onFocus={() => setShowReturnItemDropdown(true)}
+                          required
+                          disabled={!returnForm.inventoryType}
+                          placeholder={returnForm.inventoryType ? "Type or select..." : "Select type first"}
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                        <button
+                          type="button"
+                          disabled={!returnForm.inventoryType}
+                          onClick={() => setShowReturnItemDropdown(!showReturnItemDropdown)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors disabled:opacity-50"
+                        >
+                          <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showReturnItemDropdown ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+
+                      {showReturnItemDropdown && (
+                        <div className="absolute z-[160] w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-200">
+                          {returnItemOptions
+                            .filter(opt => !returnForm.itemsName || opt.toLowerCase().includes(returnForm.itemsName.toLowerCase()))
+                            .map((opt, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => {
+                                  handleSelectReturnItem(opt);
+                                  setShowReturnItemDropdown(false);
+                                }}
+                                className="w-full px-4 py-2.5 text-left text-sm font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-600 transition-colors border-b border-slate-50 last:border-0"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          {returnItemOptions.filter(opt => !returnForm.itemsName || opt.toLowerCase().includes(returnForm.itemsName.toLowerCase())).length === 0 && (
+                            <div className="px-4 py-3 text-xs font-bold text-slate-400 italic text-center">No matching items</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1672,7 +2073,21 @@ const Inventory = () => {
                     ))}
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-3">
+                    {/* Last Return Info */}
+                    {returnForm.itemsName && (
+                      <div className="grid grid-cols-2 gap-4 p-3.5 bg-fuchsia-50/50 border border-fuchsia-100 rounded-xl shadow-sm">
+                        <div className="space-y-1 ml-1">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400 block">Last Return Date</label>
+                          <div className="text-xs font-black text-fuchsia-700">{lastReturnInfo.date}</div>
+                        </div>
+                        <div className="space-y-1 ml-1">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400 block">Last Returned Qty</label>
+                          <div className="text-xs font-black text-fuchsia-700">{lastReturnInfo.qty}</div>
+                        </div>
+                      </div>
+                    )}
+
                     {!isEditing && matchingIssuedRows.length > 0 ? (
                       <>
                         <div className="flex items-center justify-between px-2 mb-1">
@@ -1731,20 +2146,20 @@ const Inventory = () => {
                       <div className="space-y-1 relative" ref={partyDropdownRef}>
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Party Name *</label>
                         <div className="relative">
-                          <input 
-                            type="text" 
-                            value={issueForm.partyName} 
+                          <input
+                            type="text"
+                            value={issueForm.partyName}
                             onChange={(e) => {
                               const val = e.target.value;
                               setIssueForm(p => ({ ...p, partyName: val }));
                               setShowPartyDropdown(true);
                             }}
                             onFocus={() => setShowPartyDropdown(true)}
-                            required 
-                            placeholder="Type or select..." 
-                            className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white" 
+                            required
+                            placeholder="Type or select..."
+                            className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 outline-none text-sm font-medium text-slate-700 bg-white"
                           />
-                          <button 
+                          <button
                             type="button"
                             onClick={() => setShowPartyDropdown(!showPartyDropdown)}
                             className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-violet-600 transition-colors"
@@ -1795,24 +2210,24 @@ const Inventory = () => {
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Venue Name</label>
-                        <input 
-                          type="text" 
-                          value={issueForm.foodName} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))} 
+                        <input
+                          type="text"
+                          value={issueForm.foodName}
+                          onChange={(e) => setIssueForm(p => ({ ...p, foodName: e.target.value }))}
                           placeholder="Enter venue..."
-                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium" 
+                          className="w-full h-11 px-4 rounded-lg border border-slate-200 focus:border-violet-500 text-sm font-medium"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-violet-600 uppercase tracking-wide">Issue Quantity *</label>
-                        <input 
-                          type="number" 
-                          onWheel={(e) => e.target.blur()} 
-                          value={issueForm.issueData} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))} 
-                          required 
+                        <input
+                          type="number"
+                          onWheel={(e) => e.target.blur()}
+                          value={issueForm.issueData}
+                          onChange={(e) => setIssueForm(p => ({ ...p, issueData: e.target.value }))}
+                          required
                           placeholder="0"
-                          className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${validationState.isOver ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`} 
+                          className={`w-full h-11 px-4 rounded-lg border-2 outline-none text-sm font-bold transition-all ${validationState.isOver ? 'border-red-500 bg-red-50 text-red-700' : 'border-violet-100 focus:border-violet-500 text-violet-700 bg-violet-50/20'}`}
                         />
                         {validationState.isOver && (
                           <div className="absolute z-10 w-full">
@@ -1824,16 +2239,16 @@ const Inventory = () => {
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Renting Rate (₹) *</label>
-                        <input 
-                          type="number" 
-                          onWheel={(e) => e.target.blur()} 
-                          step="0.01" 
-                          value={issueForm.perUnit} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))} 
-                          required 
+                        <input
+                          type="number"
+                          onWheel={(e) => e.target.blur()}
+                          step="0.01"
+                          value={issueForm.perUnit}
+                          onChange={(e) => setIssueForm(p => ({ ...p, perUnit: e.target.value }))}
+                          required
                           readOnly={issueForm.forType === 'H3'}
                           placeholder="0.00"
-                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`} 
+                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`}
                         />
                       </div>
                     </div>
@@ -1848,16 +2263,16 @@ const Inventory = () => {
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Damage/Missing Rate (₹) *</label>
-                        <input 
-                          type="number" 
-                          onWheel={(e) => e.target.blur()} 
-                          step="0.01" 
-                          value={issueForm.unit} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))} 
-                          required 
+                        <input
+                          type="number"
+                          onWheel={(e) => e.target.blur()}
+                          step="0.01"
+                          value={issueForm.unit}
+                          onChange={(e) => setIssueForm(p => ({ ...p, unit: e.target.value }))}
+                          required
                           readOnly={issueForm.forType === 'H3'}
                           placeholder="0.00"
-                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`} 
+                          className={`w-full h-11 px-4 rounded-lg border focus:border-violet-500 text-sm font-medium ${issueForm.forType === 'H3' ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'border-slate-200'}`}
                         />
                       </div>
                       <div className="space-y-1">
@@ -1895,11 +2310,11 @@ const Inventory = () => {
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Remarks</label>
-                        <textarea 
-                          value={issueForm.remarks} 
-                          onChange={(e) => setIssueForm(p => ({ ...p, remarks: e.target.value }))} 
-                          placeholder="Add any internal remarks..." 
-                          className="w-full px-4 py-3 rounded-lg border border-slate-200 h-28 resize-none shadow-sm focus:border-violet-500 outline-none text-sm font-medium" 
+                        <textarea
+                          value={issueForm.remarks}
+                          onChange={(e) => setIssueForm(p => ({ ...p, remarks: e.target.value }))}
+                          placeholder="Add any internal remarks..."
+                          className="w-full px-4 py-3 rounded-lg border border-slate-200 h-28 resize-none shadow-sm focus:border-violet-500 outline-none text-sm font-medium"
                         />
                       </div>
                     </div>
@@ -1912,7 +2327,7 @@ const Inventory = () => {
                       <div className="space-y-1"><label className="text-xs font-bold text-fuchsia-600 uppercase tracking-wide">Return Date *</label><input type="date" value={returnForm.returnDate} onChange={(e) => setReturnForm(p => ({ ...p, returnDate: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border-2 border-fuchsia-100 focus:border-fuchsia-500 text-sm font-medium" /></div>
                       <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Issue Quantity</label><div className="h-11 flex items-center bg-slate-50/50 px-4 rounded-lg border border-slate-200 text-sm font-bold text-slate-400 italic">{returnForm.issueQty || '0'}</div></div>
                     </div>
-                    
+
                     {/* Row 1: Damage, Missing, Damage Rate */}
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-1"><label className="text-xs font-bold text-red-500 uppercase tracking-wide">Damage *</label><input type="number" onWheel={(e) => e.target.blur()} value={returnForm.damageItems} onChange={(e) => setReturnForm(p => ({ ...p, damageItems: e.target.value }))} required className="w-full h-11 px-4 rounded-lg border border-red-100 focus:border-red-500 text-sm font-medium text-red-700 bg-red-50/20" /></div>
@@ -1941,9 +2356,9 @@ const Inventory = () => {
 
                 <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
                   <button type="button" onClick={() => { setIsIssueModalOpen(false); setIsReturnModalOpen(false); setIsEditing(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
-                  <button 
-                    type="submit" 
-                    disabled={isSubmitting || (isIssueModalOpen && validationState.isOver) || (isReturnModalOpen && !returnForm.itemsName)} 
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || (isIssueModalOpen && validationState.isOver) || (isReturnModalOpen && !returnForm.itemsName)}
                     className={`min-w-[140px] px-10 py-2.5 rounded-xl text-white text-sm font-bold shadow-xl transition-all flex items-center justify-center gap-2 ${isIssueModalOpen ? 'bg-violet-600' : 'bg-fuchsia-600'} hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Processing...</span></> : (isIssueModalOpen ? 'Issue Items' : 'Return Items')}
@@ -1955,7 +2370,8 @@ const Inventory = () => {
         )}
       </div>
 
-      <style dangerouslySetInnerHTML={{ __html: `
+      <style dangerouslySetInnerHTML={{
+        __html: `
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }

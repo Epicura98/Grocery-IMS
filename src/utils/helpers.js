@@ -19,7 +19,7 @@ export const formatDate = (dateStr) => {
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const y = date.getFullYear();
     return `${d}-${m}-${y}`;
-  } catch (e) {
+  } catch {
     return String(dateStr);
   }
 };
@@ -41,7 +41,7 @@ export const formatDateTime = (dateStr) => {
     const mm = String(date.getMinutes()).padStart(2, '0');
     const ss = String(date.getSeconds()).padStart(2, '0');
     return `${d}-${m}-${y} ${hh}:${mm}:${ss}`;
-  } catch (e) {
+  } catch {
     return String(dateStr);
   }
 };
@@ -108,7 +108,7 @@ export const toInputDate = (val) => {
     const mm = String(date.getMonth() + 1).padStart(2, '0');
     const dd = String(date.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
-  } catch (e) {
+  } catch {
     return '';
   }
 };

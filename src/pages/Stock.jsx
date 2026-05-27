@@ -17,6 +17,7 @@ import {
   History,
   CheckCircle2,
   XCircle,
+  Trash2,
   MoreVertical,
   Hash,
   X,
@@ -38,8 +39,6 @@ export default function Stock() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  const [error, setError] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [isTableLoading, setIsTableLoading] = useState(true);
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
   const [showFullTotal, setShowFullTotal] = useState(false);
@@ -155,7 +154,7 @@ export default function Stock() {
       const anyIdMatch = url.match(/([a-zA-Z0-9\-_]{25,})/);
       if (anyIdMatch && anyIdMatch[1]) return `https://drive.google.com/thumbnail?id=${anyIdMatch[1]}&sz=w200`;
       return url;
-    } catch (e) { return url; }
+    } catch { return url; }
   }
 
   const toggleRowSelection = (row) => {
@@ -244,6 +243,60 @@ export default function Stock() {
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedSerials.size === 0) return;
+    if (!window.confirm(`Are you sure you want to delete ${selectedSerials.size} selected record(s)?`)) return;
+    
+    setIsSubmitting(true);
+    let successCount = 0;
+    let failCount = 0;
+    const serialsArray = Array.from(selectedSerials);
+    const targetSheet = activeTab === 'purchase' ? 'Add-Stock' : 'Re-Purchase';
+
+    try {
+      for (const serial of serialsArray) {
+        try {
+          const response = await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              action: 'delete',
+              sheetName: targetSheet,
+              spreadsheetId: spreadsheetId,
+              serialNumber: serial
+            })
+          });
+          const result = await response.json();
+          if (result.success) {
+            successCount++;
+          } else {
+            console.error(`Failed to delete serial ${serial}:`, result.error);
+            failCount++;
+          }
+        } catch (err) {
+          console.error(`Error deleting serial ${serial}:`, err);
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        showToast(`Successfully deleted ${successCount} record(s)`);
+      }
+      if (failCount > 0) {
+        showToast(`Failed to delete ${failCount} record(s)`, 'error');
+      }
+
+      // Clear selection and refresh stock data
+      setSelectedSerials(new Set());
+      setEditDataMap({});
+      fetchStockData();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const fetchStockData = async () => {
     setIsTableLoading(true);
     // Fetch Add-Stock in background
@@ -265,13 +318,9 @@ export default function Stock() {
 
   useEffect(() => {
     const loadAllData = async () => {
-      setIsLoading(true);
       setIsTableLoading(true);
       try {
-        const [dropdownRes, stockRes] = await Promise.all([
-          fetch(`${scriptUrl}?action=fetch&sheet=Master-Dropdown&spreadsheetId=${spreadsheetId}`).then(r => r.json()),
-          fetch(`${scriptUrl}?action=fetch&sheet=Add-Stock&sheetName=Add-Stock&spreadsheetId=${spreadsheetId}`).then(r => r.json())
-        ]);
+        const dropdownRes = await fetch(`${scriptUrl}?action=fetch&sheet=Master-Dropdown&spreadsheetId=${spreadsheetId}`).then(r => r.json());
 
         if (dropdownRes.success && dropdownRes.data) {
           const rows = dropdownRes.data.slice(1);
@@ -288,8 +337,6 @@ export default function Stock() {
       } catch (err) {
         console.error("Fetch error:", err);
         showToast("Failed to load data", "error");
-      } finally {
-        setIsLoading(false);
       }
     };
     loadAllData();
@@ -309,17 +356,6 @@ export default function Stock() {
     });
     return [...new Set(filtered.map(row => row[3]).filter(Boolean))].sort();
   }, [historyToDisplay, searchTerm, filterDept, filterItem]);
-
-  const deptOptions = useMemo(() => {
-    const s = normalizeForMatch(searchTerm);
-    const filtered = historyToDisplay.filter(row => {
-      const matchesSearch = !s || row.some(cell => cell && normalizeForMatch(cell).includes(s));
-      const matchesType = !filterType || row[3] === filterType;
-      const matchesItem = !filterItem || row[5] === filterItem;
-      return matchesSearch && matchesType && matchesItem;
-    });
-    return [...new Set(filtered.map(row => row[4]).filter(Boolean))].sort();
-  }, [historyToDisplay, searchTerm, filterType, filterItem]);
 
   const itemOptions = useMemo(() => {
     const s = normalizeForMatch(searchTerm);
@@ -446,32 +482,50 @@ export default function Stock() {
   // Synchronous price lookup for smoother UI
   useEffect(() => {
     if (form.itemsName && masterData.length > 0) {
+      const normalizedItem = String(form.itemsName).trim().toLowerCase();
+      const normalizedType = String(form.inventoryType || '').trim().toLowerCase();
+      const normalizedDept = String(form.department || '').trim().toLowerCase();
+
       const match = masterData.find(row => 
-        String(row[1] || '').trim().toLowerCase() === String(form.itemsName).trim().toLowerCase()
+        String(row[1] || '').trim().toLowerCase() === normalizedItem &&
+        String(row[0] || '').trim().toLowerCase() === normalizedType &&
+        String(row[2] || '').trim().toLowerCase() === normalizedDept
+      ) || masterData.find(row => 
+        String(row[1] || '').trim().toLowerCase() === normalizedItem
       );
+
       if (match) {
         setForm(prev => ({ 
           ...prev, 
-          rentalPrice: match[5] || prev.rentalPrice,
-          perUnit: match[6] || prev.perUnit 
+          rentalPrice: (match[5] !== undefined && match[5] !== null && match[5] !== "") ? String(match[5]) : prev.rentalPrice,
+          perUnit: (match[6] !== undefined && match[6] !== null && match[6] !== "") ? String(match[6]) : prev.perUnit 
         }));
       }
     }
-  }, [form.itemsName, masterData]);
+  }, [form.itemsName, form.inventoryType, form.department, masterData]);
 
   useEffect(() => {
     if (purchaseForm.itemsName && masterData.length > 0) {
+      const normalizedItem = String(purchaseForm.itemsName).trim().toLowerCase();
+      const normalizedType = String(purchaseForm.inventoryType || '').trim().toLowerCase();
+      const normalizedDept = String(purchaseForm.department || '').trim().toLowerCase();
+
       const match = masterData.find(row => 
-        String(row[1] || '').trim().toLowerCase() === String(purchaseForm.itemsName).trim().toLowerCase()
+        String(row[1] || '').trim().toLowerCase() === normalizedItem &&
+        String(row[0] || '').trim().toLowerCase() === normalizedType &&
+        String(row[2] || '').trim().toLowerCase() === normalizedDept
+      ) || masterData.find(row => 
+        String(row[1] || '').trim().toLowerCase() === normalizedItem
       );
+
       if (match) {
         setPurchaseForm(prev => ({ 
           ...prev, 
-          perUnit: match[6] || prev.perUnit 
+          perUnit: (match[6] !== undefined && match[6] !== null && match[6] !== "") ? String(match[6]) : prev.perUnit 
         }));
       }
     }
-  }, [purchaseForm.itemsName, masterData]);
+  }, [purchaseForm.itemsName, purchaseForm.inventoryType, purchaseForm.department, masterData]);
 
   const handleAddItem = async (customValue) => {
     const valueToAdd = customValue?.trim();
@@ -498,7 +552,7 @@ export default function Stock() {
         setShowItemDropdown(false);
         showToast('New item added to master list');
       }
-    } catch (err) {
+    } catch {
       showToast('Failed to add item', 'error');
     } finally {
       setIsAddingItem(false);
@@ -536,7 +590,6 @@ export default function Stock() {
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
-    setError(null);
     try {
       const [imageUrl, invResult] = await Promise.all([
         selectedImage ? uploadToDrive(selectedImage) : Promise.resolve('No Image'),
@@ -585,8 +638,7 @@ export default function Stock() {
       setSelectedImage(null);
       setIsModalOpen(false);
       fetchStockData();
-    } catch (err) {
-      setError(err.message);
+    } catch {
       showToast('Failed to save record', 'error');
     } finally {
       setIsSubmitting(false);
@@ -596,7 +648,6 @@ export default function Stock() {
   const handlePurchaseSubmit = async (e) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
-    setError(null);
     try {
       const finalImageUrl = selectedImage ? await uploadToDrive(selectedImage) : (purchaseForm.imageUrl || 'No Image');
       const now = new Date();
@@ -632,8 +683,7 @@ export default function Stock() {
       setSelectedImage(null);
       setIsPurchaseModalOpen(false);
       fetchStockData();
-    } catch (err) {
-      setError(err.message);
+    } catch {
       showToast('Failed to record purchase', 'error');
     } finally {
       setIsSubmitting(false);
@@ -663,6 +713,16 @@ export default function Stock() {
           </div>
 
           <div className="flex items-center gap-4">
+            {selectedSerials.size > 0 && (
+              <button
+                onClick={handleDeleteSelected}
+                disabled={isSubmitting}
+                className="h-10 px-6 rounded-lg flex items-center gap-2 text-sm font-bold transition-all shadow-lg animate-in fade-in zoom-in-95 bg-rose-600 text-white hover:bg-rose-700 shadow-rose-100/50 active:scale-95 disabled:opacity-55"
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Delete ({selectedSerials.size})
+              </button>
+            )}
             {Object.keys(editDataMap).length > 0 && (
               <button
                 onClick={handleBatchSubmit}
@@ -1065,14 +1125,20 @@ export default function Stock() {
                               type="button"
                               onMouseDown={(e) => {
                                 e.preventDefault();
-                                const masterRow = masterData.find(row => row[1] === item[5]);
+                                const masterRow = masterData.find(row => 
+                                  String(row[1] || '').trim().toLowerCase() === String(item[5]).trim().toLowerCase() &&
+                                  String(row[0] || '').trim().toLowerCase() === String(item[3] || '').trim().toLowerCase() &&
+                                  String(row[2] || '').trim().toLowerCase() === String(item[4] || '').trim().toLowerCase()
+                                ) || masterData.find(row => 
+                                  String(row[1] || '').trim().toLowerCase() === String(item[5]).trim().toLowerCase()
+                                );
                                 setPurchaseForm({
                                   ...purchaseForm,
                                   inventoryNo: item[2],
                                   department: item[4],
                                   itemsName: item[5],
                                   unit: item[8],
-                                  perUnit: masterRow ? masterRow[6] : item[9],
+                                  perUnit: (masterRow && masterRow[6] !== undefined && masterRow[6] !== null && masterRow[6] !== "") ? String(masterRow[6]) : item[9],
                                   vendorName: item[6],
                                   imageUrl: item[10],
                                   openingBalance: '',
@@ -1282,14 +1348,23 @@ export default function Stock() {
                         <div className="absolute z-50 w-full mt-1.5 bg-white border border-slate-100 rounded-xl shadow-xl max-h-48 overflow-y-auto p-1.5 ring-1 ring-slate-900/5">
                           {filteredItems.filter(i => i.toLowerCase().includes(form.itemsName.toLowerCase())).map(item => (
                             <button key={item} type="button" onMouseDown={() => { 
+                              const normalizedItem = String(item).trim().toLowerCase();
+                              const normalizedType = String(form.inventoryType || '').trim().toLowerCase();
+                              const normalizedDept = String(form.department || '').trim().toLowerCase();
+
                               const masterRow = masterData.find(row => 
-                                String(row[1] || '').trim().toLowerCase() === String(item).trim().toLowerCase()
+                                String(row[1] || '').trim().toLowerCase() === normalizedItem &&
+                                String(row[0] || '').trim().toLowerCase() === normalizedType &&
+                                String(row[2] || '').trim().toLowerCase() === normalizedDept
+                              ) || masterData.find(row => 
+                                String(row[1] || '').trim().toLowerCase() === normalizedItem
                               );
+
                               setForm(prev => ({ 
                                 ...prev, 
                                 itemsName: item,
-                                rentalPrice: masterRow ? masterRow[5] : prev.rentalPrice,
-                                perUnit: masterRow ? masterRow[6] : prev.perUnit
+                                rentalPrice: (masterRow && masterRow[5] !== undefined && masterRow[5] !== null && masterRow[5] !== "") ? String(masterRow[5]) : prev.rentalPrice,
+                                perUnit: (masterRow && masterRow[6] !== undefined && masterRow[6] !== null && masterRow[6] !== "") ? String(masterRow[6]) : prev.perUnit
                               })); 
                               setShowItemDropdown(false); 
                             }} className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 rounded-lg">{item}</button>

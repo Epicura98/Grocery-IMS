@@ -114,7 +114,7 @@ export default function Dashboard() {
       const match = url.match(/(?:id=|\/d\/)([a-zA-Z0-9\-_]{25,})/);
       if (match && match[1]) return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w200`;
       return url;
-    } catch (e) { return url; }
+    } catch { return url; }
   }
 
   const fetchDashboardData = async () => {
@@ -303,6 +303,7 @@ export default function Dashboard() {
     };
   }, [metricsFilteredData]);
 
+  // eslint-disable-next-line no-unused-vars
   const MetricCard = ({ title, value, icon: Icon, color, loading: cardLoading }) => (
     <div
       className={`group relative overflow-hidden bg-white p-2.5 px-4 rounded-2xl border border-violet-100 shadow-sm shadow-violet-500/5 hover:shadow-violet-500/10 transition-all duration-500 cursor-pointer flex items-center gap-3.5 ${cardLoading ? 'animate-pulse' : ''}`}

@@ -1,18 +1,9 @@
-import React, { useState, useEffect } from 'react'
-import { ShieldCheck, Key, CheckCircle2, KeyRound } from 'lucide-react'
+import React from 'react'
+import { ShieldCheck, Key, CheckCircle2 } from 'lucide-react'
 import AdminLayout from '../components/layout/AdminLayout'
 
 const License = () => {
-    const [userRole, setUserRole] = useState("")
-    const [username, setUsername] = useState("")
 
-    // Get user info from sessionStorage
-    useEffect(() => {
-        const storedRole = sessionStorage.getItem('role') || 'user'
-        const storedUsername = sessionStorage.getItem('username') || 'User'
-        setUserRole(storedRole)
-        setUsername(storedUsername)
-    }, [])
 
     return (
         <AdminLayout>
